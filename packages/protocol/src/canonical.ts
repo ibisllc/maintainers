@@ -18,6 +18,7 @@ import type {
   EmailRotation,
   KeyIntroductionRequest,
   ReleaseEndorsement,
+  CaEndorsement,
   Pubkey,
 } from "./types.js";
 
@@ -210,6 +211,38 @@ export function canonicalReleaseEndorsement(
     e.previousCommitHash ?? "",
     e.intermediateMerkleRoot,
     e.endorsedNotes ?? "",
+    e.issuedAt,
+    e.signedBy,
+  ]);
+}
+
+/**
+ * CaEndorsement canonical bytes.
+ * Order:
+ *   endorsementId | track | caPubkey | scope | notBefore | notAfter
+ *   | issuedAt | signedBy
+ *
+ * No predecessor / chain fields by design — a CaEndorsement is an
+ * independent short lease, not append-only history (§5.1).
+ */
+export function canonicalCaEndorsement(
+  e: Omit<CaEndorsement, "signatures">,
+): Uint8Array {
+  validateField("endorsementId", e.endorsementId);
+  validateField("track", e.track);
+  validateHex("caPubkey", e.caPubkey, 64);
+  validateField("scope", e.scope);
+  validateField("notBefore", e.notBefore);
+  validateField("notAfter", e.notAfter);
+  validateField("issuedAt", e.issuedAt);
+  validateHex("signedBy", e.signedBy, 64);
+  return joinTagged("ca-endorsement", [
+    e.endorsementId,
+    e.track,
+    e.caPubkey,
+    e.scope,
+    e.notBefore,
+    e.notAfter,
     e.issuedAt,
     e.signedBy,
   ]);

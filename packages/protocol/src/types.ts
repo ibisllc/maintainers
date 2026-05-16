@@ -123,13 +123,45 @@ export interface ReleaseEndorsement {
   signatures: SignatureEntry[];
 }
 
+/**
+ * CaEndorsement — a present-tense, liveness-sensitive lease authorizing
+ * a hot operational key (e.g. a server CA) for a bounded window.
+ *
+ * Deliberately NOT a ReleaseEndorsement: it carries no predecessor
+ * chain and is judged against the ca-track authority at the verifier's
+ * own clock (NOW), never at an attacker-controllable `issuedAt`. A
+ * leaked operational key is bounded to one lease window and killed by
+ * simply withholding the next endorsement — no revocation list. See
+ * docs/spec/v1.md §2.6 / §3.7 / §5.1.
+ */
+export interface CaEndorsement {
+  kind: "CaEndorsement";
+  version: 1;
+  endorsementId: Uuid;
+  /** the ca-class track this is scoped to (e.g. "ca"). */
+  track: string;
+  /** the hot operational key being authorized. */
+  caPubkey: Pubkey;
+  /** free-form consumer scope, e.g. "flagship/directory-attestation". */
+  scope: string;
+  /** lease window start (inclusive). */
+  notBefore: Iso8601;
+  /** lease window end (exclusive) — the cadence knob. */
+  notAfter: Iso8601;
+  issuedAt: Iso8601;
+  /** must be the ca-track authority at NOW (not at issuedAt). */
+  signedBy: Pubkey;
+  signatures: SignatureEntry[];
+}
+
 export type Envelope =
   | Mandate
   | KeyFile
   | KeyRedirect
   | EmailRotation
   | KeyIntroductionRequest
-  | ReleaseEndorsement;
+  | ReleaseEndorsement
+  | CaEndorsement;
 
 /** Derived from observation; not signed. */
 export interface TakeoverAlarm {

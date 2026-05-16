@@ -233,6 +233,8 @@ function defaultMessageForEnvelope(env: Envelope): string {
       return `maintainers: key introduction request ${env.displayName}`;
     case "ReleaseEndorsement":
       return `maintainers: endorse ${env.semverTag}`;
+    case "CaEndorsement":
+      return `maintainers: ca lease ${env.caPubkey.slice(0, 8)} (${env.scope})`;
   }
 }
 
