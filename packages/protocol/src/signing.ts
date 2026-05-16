@@ -16,6 +16,7 @@ import {
   canonicalEmailRotation,
   canonicalKeyIntroductionRequest,
   canonicalReleaseEndorsement,
+  canonicalCaEndorsement,
 } from "./canonical.js";
 import { sign, pubKeyFromPriv } from "./crypto.js";
 import type {
@@ -25,6 +26,7 @@ import type {
   EmailRotation,
   KeyIntroductionRequest,
   ReleaseEndorsement,
+  CaEndorsement,
 } from "./types.js";
 
 export function signMandate(
@@ -100,6 +102,18 @@ export function signReleaseEndorsement(
   signers: { privKey: string }[],
 ): ReleaseEndorsement {
   const bytes = canonicalReleaseEndorsement(unsigned);
+  const signatures = signers.map(({ privKey }) => ({
+    pubkey: pubKeyFromPriv(privKey),
+    sig: sign(bytes, privKey),
+  }));
+  return { ...unsigned, signatures };
+}
+
+export function signCaEndorsement(
+  unsigned: Omit<CaEndorsement, "signatures">,
+  signers: { privKey: string }[],
+): CaEndorsement {
+  const bytes = canonicalCaEndorsement(unsigned);
   const signatures = signers.map(({ privKey }) => ({
     pubkey: pubKeyFromPriv(privKey),
     sig: sign(bytes, privKey),

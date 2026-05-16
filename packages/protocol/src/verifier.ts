@@ -11,7 +11,14 @@
 
 import { canonicalMandate } from "./canonical.js";
 import { verify } from "./crypto.js";
-import type { ApprovalRule, Mandate, Pubkey, TrackPolicy } from "./types.js";
+import type {
+  ApprovalRule,
+  Iso8601,
+  Mandate,
+  Pubkey,
+  TrackPolicy,
+  Uuid,
+} from "./types.js";
 
 export type VerifyResult =
   | { ok: true; mandate: Mandate }
@@ -248,6 +255,173 @@ export function currentAuthority(
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Checkpointed verification (spec §5.2) — a performance optimization,
+// NEVER a trust floor.
+//
+// A consumer that has already verified a track from the pinned genesis
+// persists the resulting authority as a TrackCheckpoint and, on the
+// next sync, asks the (untrusted) server only for the *suffix* of
+// mandates after that point. Three invariants make this safe:
+//
+//   1. Optimization-not-floor — genesis stays the only anchor. The
+//      checkpoint is something the client itself derived from a
+//      genesis walk; a corrupt or wrong-track checkpoint is a hard
+//      error here, and the caller MUST fall back to a full re-walk
+//      from the pinned genesis (never silently trust the checkpoint).
+//   2. Suffix cryptographically chained — every suffix mandate's
+//      Ed25519 signatures are verified over its canonical bytes and
+//      its signer must be authorized by the checkpoint (the synthetic
+//      predecessor). A forged or non-chaining suffix is rejected.
+//   3. Alarms unskippable — a takeover is derived from the *observed
+//      holder change at the checkpoint boundary*, so a server that
+//      drops the intermediate takeover mandate (presenting only the
+//      post-takeover state) still surfaces the alarm. It may drop only
+//      benign same-holder renewals, which by construction change no
+//      authority and hide nothing.
+// ---------------------------------------------------------------------------
+
+export interface TrackCheckpoint {
+  track: string;
+  mandateId: Uuid;
+  holder: Pubkey;
+  successors: Pubkey[];
+  issuedAt: Iso8601;
+  expiresAt: Iso8601;
+  /** newMandate ids of takeover alarms the user already acknowledged. */
+  ackedAlarms: Uuid[];
+}
+
+export interface CheckpointTakeoverAlarm {
+  track: string;
+  previousMandate: Uuid;
+  newMandate: Uuid;
+  previousHolder: Pubkey;
+  newHolder: Pubkey;
+}
+
+export interface CheckpointVerifyResult {
+  /**
+   * A VerifiedTrack whose validMandates are
+   * `[synthetic-checkpoint, ...accepted suffix]`, so `currentAuthority`
+   * yields the identical result a full genesis walk would.
+   */
+  verified: VerifiedTrack;
+  /** Every holder transition observed, including the boundary. */
+  alarms: CheckpointTakeoverAlarm[];
+  /** `alarms` minus `checkpoint.ackedAlarms` — what to surface now. */
+  unacknowledgedAlarms: CheckpointTakeoverAlarm[];
+}
+
+/**
+ * Derive the persistable checkpoint from a fully (genesis-anchored)
+ * verified track. Returns null if the track has no valid mandate.
+ */
+export function checkpointFromVerifiedTrack(
+  track: VerifiedTrack,
+  ackedAlarms: Uuid[] = [],
+): TrackCheckpoint | null {
+  const last = track.validMandates[track.validMandates.length - 1];
+  if (!last) return null;
+  return {
+    track: track.track,
+    mandateId: last.mandateId,
+    holder: last.holder,
+    successors: last.successors,
+    issuedAt: last.issuedAt,
+    expiresAt: last.expiresAt,
+    ackedAlarms,
+  };
+}
+
+function syntheticMandateFromCheckpoint(cp: TrackCheckpoint): Mandate {
+  // Its signature was already verified when the checkpoint was minted
+  // from a genesis walk, so it is seeded as accepted and not re-checked
+  // — that is the entire optimization.
+  return {
+    kind: "Mandate",
+    version: 1,
+    mandateId: cp.mandateId,
+    track: cp.track,
+    holder: cp.holder,
+    issuedAt: cp.issuedAt,
+    expiresAt: cp.expiresAt,
+    successors: cp.successors,
+    signedBy: cp.holder,
+    signatures: [],
+  };
+}
+
+/**
+ * Verify a suffix of mandates continuing from a checkpoint instead of
+ * from genesis. The checkpoint MUST be for `trackName` (a mismatch
+ * throws — invariant 1: the caller must then re-walk from genesis).
+ */
+export function verifyTrackFromCheckpoint(
+  trackName: string,
+  policy: TrackPolicy,
+  checkpoint: TrackCheckpoint,
+  suffixMandates: Mandate[],
+): CheckpointVerifyResult {
+  if (policy.track !== trackName) {
+    throw new Error(
+      `verifyTrackFromCheckpoint: policy.track "${policy.track}" does not match expected "${trackName}"`,
+    );
+  }
+  if (checkpoint.track !== trackName) {
+    throw new Error(
+      `verifyTrackFromCheckpoint: checkpoint.track "${checkpoint.track}" does not match expected "${trackName}" — re-walk from genesis`,
+    );
+  }
+
+  const synthetic = syntheticMandateFromCheckpoint(checkpoint);
+  const accepted: Mandate[] = [synthetic];
+  const seenIds = new Set<string>([checkpoint.mandateId]);
+  const rejections: VerifiedTrack["rejections"] = [];
+
+  for (let i = 0; i < suffixMandates.length; i++) {
+    const m = suffixMandates[i]!;
+    const result = verifySingleMandate(m, policy, accepted, seenIds);
+    if (result.ok) {
+      accepted.push(m);
+      seenIds.add(m.mandateId);
+    } else {
+      rejections.push({ mandate: m, reason: result.reason, detail: result.detail });
+    }
+  }
+
+  const verified: VerifiedTrack = {
+    track: trackName,
+    mandates: suffixMandates,
+    validMandates: accepted,
+    rejections,
+  };
+
+  // Takeover = a valid mandate signed by someone other than the prior
+  // holder. The synthetic checkpoint is index 0, so i=1 is the
+  // boundary — a takeover there is detected even if the server dropped
+  // the real takeover mandate, because the holder visibly changed
+  // relative to the checkpoint.
+  const alarms: CheckpointTakeoverAlarm[] = [];
+  for (let i = 1; i < accepted.length; i++) {
+    const prev = accepted[i - 1]!;
+    const cur = accepted[i]!;
+    if (cur.signedBy !== prev.holder) {
+      alarms.push({
+        track: trackName,
+        previousMandate: prev.mandateId,
+        newMandate: cur.mandateId,
+        previousHolder: prev.holder,
+        newHolder: cur.holder,
+      });
+    }
+  }
+  const acked = new Set(checkpoint.ackedAlarms);
+  const unacknowledgedAlarms = alarms.filter((a) => !acked.has(a.newMandate));
+
+  return { verified, alarms, unacknowledgedAlarms };
 }
 
 /**

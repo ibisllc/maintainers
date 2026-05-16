@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalMandate,
   canonicalReleaseEndorsement,
+  canonicalCaEndorsement,
   canonicalKeyFile,
   CanonicalBytesError,
 } from "../src/canonical.js";
-import type { Mandate, ReleaseEndorsement, KeyFile } from "../src/types.js";
+import type {
+  Mandate,
+  ReleaseEndorsement,
+  CaEndorsement,
+  KeyFile,
+} from "../src/types.js";
 
 const FORTY_HEX = "0".repeat(40);
 const SIXTY_FOUR_HEX = "0".repeat(64);
@@ -126,6 +132,62 @@ describe("canonicalReleaseEndorsement", () => {
       previousCommitHash: FORTY_HEX,
     });
     expect(() => canonicalReleaseEndorsement(e)).not.toThrow();
+  });
+});
+
+describe("canonicalCaEndorsement", () => {
+  function baseCa(
+    overrides: Partial<CaEndorsement> = {},
+  ): Omit<CaEndorsement, "signatures"> {
+    return {
+      kind: "CaEndorsement",
+      version: 1,
+      endorsementId: "ca-endorsement-uuid",
+      track: "ca",
+      caPubkey: SIXTY_FOUR_HEX.slice(0, 63) + "a",
+      scope: "flagship/directory-attestation",
+      notBefore: "2026-05-15T00:00:00Z",
+      notAfter: "2026-05-22T00:00:00Z",
+      issuedAt: "2026-05-15T00:00:00Z",
+      signedBy: SIXTY_FOUR_HEX.slice(0, 63) + "1",
+      ...overrides,
+    };
+  }
+
+  it("produces deterministic bytes", () => {
+    const e = baseCa();
+    expect(canonicalCaEndorsement(e)).toEqual(canonicalCaEndorsement({ ...e }));
+  });
+
+  it("uses the maintainers/ca-endorsement/v1 tag", () => {
+    const decoded = new TextDecoder().decode(canonicalCaEndorsement(baseCa()));
+    expect(decoded.startsWith("maintainers/ca-endorsement/v1|")).toBe(true);
+  });
+
+  it("rejects '|' in scope", () => {
+    expect(() => canonicalCaEndorsement(baseCa({ scope: "a|b" }))).toThrow(
+      CanonicalBytesError,
+    );
+  });
+
+  it("rejects a malformed caPubkey", () => {
+    expect(() => canonicalCaEndorsement(baseCa({ caPubkey: "short" }))).toThrow(
+      CanonicalBytesError,
+    );
+  });
+
+  it("changing the lease window changes the bytes", () => {
+    const a = canonicalCaEndorsement(baseCa());
+    const b = canonicalCaEndorsement(baseCa({ notAfter: "2026-05-29T00:00:00Z" }));
+    expect(a).not.toEqual(b);
+  });
+
+  it("changing caPubkey changes the bytes (rotation)", () => {
+    const a = canonicalCaEndorsement(baseCa());
+    const b = canonicalCaEndorsement(
+      baseCa({ caPubkey: SIXTY_FOUR_HEX.slice(0, 63) + "b" }),
+    );
+    expect(a).not.toEqual(b);
   });
 });
 

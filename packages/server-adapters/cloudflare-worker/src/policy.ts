@@ -38,6 +38,7 @@ import {
   canonicalEmailRotation,
   canonicalKeyIntroductionRequest,
   canonicalReleaseEndorsement,
+  canonicalCaEndorsement,
   verify,
   bytesToHex,
   hexToBytes,
@@ -51,6 +52,7 @@ import {
   type EmailRotation,
   type KeyIntroductionRequest,
   type ReleaseEndorsement,
+  type CaEndorsement,
   type TrackPolicy,
   type RootPolicy,
   type ApprovalRule,
@@ -174,6 +176,8 @@ function parseEnvelope(raw: unknown): ParsedEnvelope {
       return shapeKeyIntroductionRequest(obj);
     case "ReleaseEndorsement":
       return shapeReleaseEndorsement(obj);
+    case "CaEndorsement":
+      return shapeCaEndorsement(obj);
     default:
       return { ok: false, status: 400, reason: "envelope-kind-unknown" };
   }
@@ -281,6 +285,23 @@ function shapeReleaseEndorsement(obj: Record<string, unknown>): ParsedEnvelope {
   return { ok: true, envelope: obj as unknown as ReleaseEndorsement };
 }
 
+function shapeCaEndorsement(obj: Record<string, unknown>): ParsedEnvelope {
+  if (
+    typeof obj["endorsementId"] !== "string" ||
+    typeof obj["track"] !== "string" ||
+    typeof obj["caPubkey"] !== "string" ||
+    typeof obj["scope"] !== "string" ||
+    typeof obj["notBefore"] !== "string" ||
+    typeof obj["notAfter"] !== "string" ||
+    typeof obj["issuedAt"] !== "string" ||
+    typeof obj["signedBy"] !== "string" ||
+    !Array.isArray(obj["signatures"])
+  ) {
+    return { ok: false, status: 400, reason: "ca-endorsement-shape" };
+  }
+  return { ok: true, envelope: obj as unknown as CaEndorsement };
+}
+
 function canonicalBytesFor(e: Envelope): Uint8Array {
   switch (e.kind) {
     case "Mandate":
@@ -295,6 +316,8 @@ function canonicalBytesFor(e: Envelope): Uint8Array {
       return canonicalKeyIntroductionRequest(e);
     case "ReleaseEndorsement":
       return canonicalReleaseEndorsement(e);
+    case "CaEndorsement":
+      return canonicalCaEndorsement(e);
   }
 }
 
@@ -302,7 +325,11 @@ function checkSignatures(
   e: Envelope,
   bytes: Uint8Array,
 ): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
-  if (e.kind === "Mandate" || e.kind === "ReleaseEndorsement") {
+  if (
+    e.kind === "Mandate" ||
+    e.kind === "ReleaseEndorsement" ||
+    e.kind === "CaEndorsement"
+  ) {
     if (e.signatures.length === 0) {
       return { ok: false, status: 400, reason: "no-signatures" };
     }
@@ -339,6 +366,8 @@ function checkAuthority(
       return checkMandateAuthority(e, state, now);
     case "ReleaseEndorsement":
       return checkEndorsementAuthority(e, state, now);
+    case "CaEndorsement":
+      return checkCaEndorsementAuthority(e, state, now);
     case "KeyFile":
     case "KeyRedirect":
     case "EmailRotation":
@@ -465,6 +494,70 @@ function checkEndorsementAuthority(
   return { ok: true };
 }
 
+/**
+ * CaEndorsement authority — the deliberate deviation from
+ * ReleaseEndorsement: the signer is checked against the ca-track
+ * authority at the verifier's clock `now`, NOT at the endorsement's
+ * `issuedAt`, and the lease window is enforced. A backdated `issuedAt`
+ * cannot resurrect a key whose ca-track authority has since rotated,
+ * and a lapsed lease is rejected with no revocation list. See
+ * docs/spec/v1.md §5.1.
+ */
+function checkCaEndorsementAuthority(
+  e: CaEndorsement,
+  state: RepoState,
+  now: Date,
+): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
+  const SKEW_MS = 5 * 60 * 1000; // ±5 min clock-skew tolerance (spec §7)
+  const nb = Date.parse(e.notBefore);
+  const na = Date.parse(e.notAfter);
+  if (!isFinite(nb) || !isFinite(na) || na <= nb) {
+    return { ok: false, status: 400, reason: "ca-endorsement-window-malformed" };
+  }
+  const nowMs = now.getTime();
+  if (nowMs < nb - SKEW_MS) {
+    return { ok: false, status: 403, reason: "ca-endorsement-lease-not-yet" };
+  }
+  if (nowMs >= na + SKEW_MS) {
+    return { ok: false, status: 403, reason: "ca-endorsement-lease-expired" };
+  }
+  const trackEntry = state.tracks.get(e.track);
+  if (!trackEntry) {
+    return { ok: false, status: 403, reason: "ca-track-not-declared" };
+  }
+  const verified = verifyTrack(e.track, trackEntry.policy, trackEntry.mandates);
+  // NOW, not issuedAt — the entire CaEndorsement security argument.
+  const authority = currentAuthority(verified, now);
+  if (!authority) {
+    return { ok: false, status: 403, reason: "no-active-ca-authority" };
+  }
+  const rule = trackEntry.policy.approvalRule;
+  if (rule.kind === "threshold" && rule.of === "anyAuthorizedSigner") {
+    if (e.signedBy !== authority.holder) {
+      return { ok: false, status: 403, reason: "ca-endorsement-signer-not-holder" };
+    }
+    if (e.signatures.length < rule.threshold) {
+      return {
+        ok: false,
+        status: 403,
+        reason: "ca-endorsement-approval-rule-unsatisfied",
+      };
+    }
+  } else if (rule.kind === "threshold") {
+    const required = new Set(rule.of);
+    let matches = 0;
+    for (const s of e.signatures) if (required.has(s.pubkey)) matches++;
+    if (matches < rule.threshold) {
+      return {
+        ok: false,
+        status: 403,
+        reason: "ca-endorsement-approval-rule-unsatisfied",
+      };
+    }
+  }
+  return { ok: true };
+}
+
 function checkKeyEnvelopeAuthority(
   e: KeyFile | KeyRedirect | EmailRotation | KeyIntroductionRequest,
   state: RepoState,
@@ -501,6 +594,7 @@ function commitMessageFor(e: Envelope, now: Date): string {
   switch (e.kind) {
     case "Mandate":
     case "ReleaseEndorsement":
+    case "CaEndorsement":
       pubkeyShort = e.signedBy.slice(0, 8);
       break;
     case "KeyFile":
