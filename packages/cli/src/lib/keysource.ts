@@ -210,31 +210,33 @@ export interface PivTransport {
 export type PivPinProvider = () => Promise<string>;
 
 /**
- * The default real transport. Until the native PC/SC implementation is
- * wired + verified against a real YubiKey (the Phase-1 human gate), this
- * fail-closes with a precise, human-readable reason. It MUST NOT fall
- * back to any in-process key.
+ * The default real transport: the pure APDU codec composed over a real
+ * PC/SC channel (`piv-pcsc.ts`). The channel binding is OPTIONAL and
+ * loaded lazily; if it (or a reader/token) is absent, `connectPcscChannel`
+ * fail-closes with a precise, human-readable reason whose message still
+ * contains "the native PIV/PC/SC transport is not wired in this build".
+ * It MUST NOT fall back to any in-process key — the only alternative is
+ * the explicitly lower-assurance `file:` hex key, chosen by the operator.
+ * The libpcsclite round-trip is verified only at the YubiKey human gate.
  */
+async function realChannelTransport(): Promise<PivTransport> {
+  // Dynamic import: defers the optional-binding probe to call time and
+  // sidesteps any module-init cycle (piv-pcsc only type-imports here).
+  const { connectPcscChannel, pcscPivTransport } = await import("./piv-pcsc.js");
+  return pcscPivTransport(await connectPcscChannel());
+}
+
 export const realPivTransport: PivTransport = {
-  async getPublicKey() {
-    throw new CliError(unwiredMsg("read a PIV public key"));
+  async getPublicKey(slot) {
+    return (await realChannelTransport()).getPublicKey(slot);
   },
-  async signEd25519() {
-    throw new CliError(unwiredMsg("sign with a PIV key"));
+  async signEd25519(slot, pin, message) {
+    return (await realChannelTransport()).signEd25519(slot, pin, message);
   },
-  async generateEd25519() {
-    throw new CliError(unwiredMsg("generate a PIV key"));
+  async generateEd25519(slot, policy) {
+    return (await realChannelTransport()).generateEd25519(slot, policy);
   },
 };
-
-function unwiredMsg(action: string): string {
-  return (
-    `cannot ${action}: the native PIV/PC/SC transport is not wired in ` +
-    `this build. Use a build with the hardware transport (the genesis ` +
-    `ceremony build), or fall back to a "file:" hex key (lower assurance, ` +
-    `air-gapped/successor only — see docs/ca-operations.md).`
-  );
-}
 
 export interface SignerOptions {
   io?: KeySourceFs;
