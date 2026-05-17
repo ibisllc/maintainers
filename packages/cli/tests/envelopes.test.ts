@@ -6,6 +6,11 @@
  * cross-check the output against the protocol library's verifier so the CLI
  * is guaranteed to emit envelopes that verify back-to-back (the same property
  * the web UI must hold).
+ *
+ * `build*` is async (it may drive a YubiKey PIV transport). One test drives
+ * `buildGenesis` through an injected fake PIV transport to prove the
+ * maintainer-root path produces a mandate byte-identical to the hex path
+ * and that the protocol verifier accepts it — the §11.1 linchpin end to end.
  */
 
 import { describe, expect, it } from "vitest";
@@ -15,11 +20,10 @@ import * as path from "node:path";
 import {
   canonicalMandate,
   canonicalReleaseEndorsement,
-  currentAuthority,
   generateKeypair,
   intermediateMerkleRoot,
+  sign,
   verify,
-  verifyChainOfEndorsements,
   verifyTrack,
   type TrackPolicy,
 } from "@maintainers/protocol";
@@ -49,8 +53,14 @@ function mkTmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+const RELEASE_POLICY: TrackPolicy = {
+  track: "release",
+  defaultMandateDuration: "60d",
+  approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
+};
+
 describe("buildGenesis", () => {
-  it("produces a self-signed genesis mandate that verifies against the protocol verifier", () => {
+  it("produces a self-signed genesis mandate that verifies against the protocol verifier", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const io = fakeFs({
@@ -58,7 +68,7 @@ describe("buildGenesis", () => {
       "./alice.priv": alice.privKey,
       "./bob.pub": bob.pubKey,
     });
-    const m = buildGenesis({
+    const m = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",
@@ -78,24 +88,19 @@ describe("buildGenesis", () => {
     expect(m.expiresAt).toBe("2026-03-02T00:00:00.000Z");
     expect(m.signatures.length).toBe(1);
 
-    const policy: TrackPolicy = {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    };
-    const verified = verifyTrack("release", policy, [m]);
+    const verified = verifyTrack("release", RELEASE_POLICY, [m]);
     expect(verified.validMandates).toHaveLength(1);
     expect(verified.rejections).toHaveLength(0);
   });
 
-  it("rejects a signing key that does not match --holder-key", () => {
+  it("rejects a signing key that does not match --holder-key", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const io = fakeFs({
       "./alice.pub": alice.pubKey,
       "./bob.priv": bob.privKey,
     });
-    expect(() =>
+    await expect(
       buildGenesis({
         track: "release",
         duration: "60d",
@@ -107,16 +112,16 @@ describe("buildGenesis", () => {
         io,
         uuid: () => "x",
       }),
-    ).toThrow(/genesis must be self-signed/);
+    ).rejects.toThrow(/genesis must be self-signed/);
   });
 
-  it("defaults successors to [holder] when --successors not provided", () => {
+  it("defaults successors to [holder] when --successors not provided", async () => {
     const alice = keypair(7);
     const io = fakeFs({
       "./alice.pub": alice.pubKey,
       "./alice.priv": alice.privKey,
     });
-    const m = buildGenesis({
+    const m = await buildGenesis({
       track: "release",
       duration: "30d",
       holderKeySource: "file:./alice.pub",
@@ -129,19 +134,56 @@ describe("buildGenesis", () => {
     });
     expect(m.successors).toEqual([alice.pubKey]);
   });
+
+  it("YubiKey-PIV genesis (injected token) is byte-identical to the hex path and verifies", async () => {
+    const root = keypair(42); // the maintainer root key, resident on the token
+    // holder + signer + the named successor are all read from the PIV slot
+    // here (genesis is self-signed; a single fake token stands in for both
+    // the no-PIN public reads and the signing tap).
+    const m = await buildGenesis({
+      track: "ca",
+      duration: "180d",
+      holderKeySource: "yubikey-piv:slot=9c",
+      signingKeySource: "yubikey-piv:slot=9c",
+      successorsSource: "yubikey-piv:slot=9c",
+      outputDir: undefined,
+      now: () => new Date("2026-05-17T00:00:00Z"),
+      io: fakeFs({}),
+      uuid: () => "deadbeef-dead-beef-dead-beefdeadbeef",
+      // genesis reads holder (no PIN), reads successor (no PIN), then signs.
+      pivTransport: {
+        async getPublicKey() {
+          return root.pubKey;
+        },
+        async signEd25519(_slot, _pin, message) {
+          return sign(message, root.privKey);
+        },
+        async generateEd25519() {
+          return root.pubKey;
+        },
+      },
+      pivPin: async () => "424242",
+    });
+    expect(m.holder).toBe(root.pubKey);
+    expect(m.signedBy).toBe(root.pubKey);
+    // Same canonical bytes ⇒ same signature as the in-process hex path.
+    const bytes = canonicalMandate(m);
+    expect(verify(m.signatures[0]!.sig, bytes, root.pubKey)).toBe(true);
+    expect(m.signatures[0]!.sig).toBe(sign(bytes, root.privKey));
+    const policy: TrackPolicy = { ...RELEASE_POLICY, track: "ca" };
+    const verified = verifyTrack("ca", policy, [m]);
+    expect(verified.validMandates).toHaveLength(1);
+    expect(verified.rejections).toHaveLength(0);
+  });
 });
 
 describe("buildRenewal", () => {
-  it("produces a holder-signed renewal that the verifier accepts as a continuation", () => {
+  it("produces a holder-signed renewal that the verifier accepts as a continuation", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const tmp = mkTmp("maintainers-cli-renewal-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",
@@ -158,7 +200,7 @@ describe("buildRenewal", () => {
     });
     writeMandate(tmp, genesis);
 
-    const renewal = buildRenewal({
+    const renewal = await buildRenewal({
       track: "release",
       duration: "60d",
       signingKeySource: "file:./alice.priv",
@@ -172,26 +214,17 @@ describe("buildRenewal", () => {
     expect(renewal.holder).toBe(alice.pubKey);
     expect(renewal.signedBy).toBe(alice.pubKey);
     expect(renewal.successors).toEqual([bob.pubKey]);
-    const policy: TrackPolicy = {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    };
-    const verified = verifyTrack("release", policy, [genesis, renewal]);
+    const verified = verifyTrack("release", RELEASE_POLICY, [genesis, renewal]);
     expect(verified.validMandates).toHaveLength(2);
     expect(verified.rejections).toHaveLength(0);
   });
 
-  it("rejects a renewal signed by someone who is not the current holder", () => {
+  it("rejects a renewal signed by someone who is not the current holder", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const tmp = mkTmp("maintainers-cli-renewal-bad-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",
@@ -207,7 +240,7 @@ describe("buildRenewal", () => {
       uuid: () => "gx",
     });
     writeMandate(tmp, genesis);
-    expect(() =>
+    await expect(
       buildRenewal({
         track: "release",
         duration: "60d",
@@ -218,21 +251,17 @@ describe("buildRenewal", () => {
         io: fakeFs({ "./bob.priv": bob.privKey }),
         uuid: () => "rx",
       }),
-    ).toThrow(/not the current holder/);
+    ).rejects.toThrow(/not the current holder/);
   });
 });
 
 describe("buildTakeover", () => {
-  it("named successor produces a takeover after expiry that verifies", () => {
+  it("named successor produces a takeover after expiry that verifies", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const tmp = mkTmp("maintainers-cli-takeover-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "30d",
       holderKeySource: "file:./alice.pub",
@@ -249,7 +278,7 @@ describe("buildTakeover", () => {
     });
     writeMandate(tmp, genesis);
 
-    const takeover = buildTakeover({
+    const takeover = await buildTakeover({
       track: "release",
       duration: "60d",
       successorKeySource: "file:./bob.priv",
@@ -267,26 +296,17 @@ describe("buildTakeover", () => {
     expect(takeover.holder).toBe(bob.pubKey);
     expect(takeover.signedBy).toBe(bob.pubKey);
     expect(takeover.successors).toEqual([bob.pubKey]);
-    const policy: TrackPolicy = {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    };
-    const verified = verifyTrack("release", policy, [genesis, takeover]);
+    const verified = verifyTrack("release", RELEASE_POLICY, [genesis, takeover]);
     expect(verified.validMandates).toHaveLength(2);
     expect(verified.rejections).toHaveLength(0);
   });
 
-  it("rejects a takeover before the predecessor expires", () => {
+  it("rejects a takeover before the predecessor expires", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const tmp = mkTmp("maintainers-cli-takeover-early-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "30d",
       holderKeySource: "file:./alice.pub",
@@ -302,7 +322,7 @@ describe("buildTakeover", () => {
       uuid: () => "g",
     });
     writeMandate(tmp, genesis);
-    expect(() =>
+    await expect(
       buildTakeover({
         track: "release",
         duration: "60d",
@@ -317,20 +337,16 @@ describe("buildTakeover", () => {
         }),
         uuid: () => "t",
       }),
-    ).toThrow(/has not yet expired/);
+    ).rejects.toThrow(/has not yet expired/);
   });
 
-  it("rejects a takeover signed by a non-successor", () => {
+  it("rejects a takeover signed by a non-successor", async () => {
     const alice = keypair(1);
     const bob = keypair(2);
     const eve = keypair(3);
     const tmp = mkTmp("maintainers-cli-takeover-eve-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "30d",
       holderKeySource: "file:./alice.pub",
@@ -346,7 +362,7 @@ describe("buildTakeover", () => {
       uuid: () => "g",
     });
     writeMandate(tmp, genesis);
-    expect(() =>
+    await expect(
       buildTakeover({
         track: "release",
         duration: "60d",
@@ -361,20 +377,16 @@ describe("buildTakeover", () => {
         }),
         uuid: () => "t",
       }),
-    ).toThrow(/not a named successor/);
+    ).rejects.toThrow(/not a named successor/);
   });
 });
 
 describe("buildEndorsement", () => {
-  it("produces a genesis release endorsement with correct merkle root", () => {
+  it("produces a genesis release endorsement with correct merkle root", async () => {
     const alice = keypair(1);
     const tmp = mkTmp("maintainers-cli-endorsement-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",
@@ -415,15 +427,11 @@ describe("buildEndorsement", () => {
     expect(verify(e.signatures[0]!.sig, bytes, alice.pubKey)).toBe(true);
   });
 
-  it("verifies inline csv intermediates produce a correct merkle root", () => {
+  it("verifies inline csv intermediates produce a correct merkle root", async () => {
     const alice = keypair(1);
     const tmp = mkTmp("maintainers-cli-endorsement-csv-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",
@@ -459,15 +467,11 @@ describe("buildEndorsement", () => {
     expect(e.intermediateMerkleRoot).toBe(intermediateMerkleRoot([c2, c3]));
   });
 
-  it("rejects a non-hex commit hash", () => {
+  it("rejects a non-hex commit hash", async () => {
     const alice = keypair(1);
     const tmp = mkTmp("maintainers-cli-endorsement-bad-");
-    writeTrackPolicyIfMissing(tmp, {
-      track: "release",
-      defaultMandateDuration: "60d",
-      approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-    });
-    const genesis = buildGenesis({
+    writeTrackPolicyIfMissing(tmp, RELEASE_POLICY);
+    const genesis = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",
@@ -502,13 +506,13 @@ describe("buildEndorsement", () => {
 });
 
 describe("canonical-bytes parity with the protocol library", () => {
-  it("canonicalMandate over a CLI-built mandate matches what signMandate signed", () => {
+  it("canonicalMandate over a CLI-built mandate matches what the signer signed", async () => {
     const alice = keypair(11);
     const io = fakeFs({
       "./alice.pub": alice.pubKey,
       "./alice.priv": alice.privKey,
     });
-    const m = buildGenesis({
+    const m = await buildGenesis({
       track: "release",
       duration: "60d",
       holderKeySource: "file:./alice.pub",

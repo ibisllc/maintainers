@@ -15,7 +15,12 @@
  */
 
 import { CliError, parseArgs, type ParsedArgs } from "./lib/args.js";
-import { realFs, type KeySourceFs } from "./lib/keysource.js";
+import {
+  realFs,
+  type KeySourceFs,
+  type PivTransport,
+  type PivPinProvider,
+} from "./lib/keysource.js";
 import { newUuid } from "./lib/uuid.js";
 import { runGenesis } from "./commands/genesis.js";
 import { runMandate } from "./commands/mandate.js";
@@ -29,6 +34,13 @@ export interface CliEnv {
   uuid: () => string;
   println: (line: string) => void;
   printerr: (line: string) => void;
+  /** PIV transport for `yubikey-piv:` key sources (default:
+   *  realPivTransport, which fail-closes until the native PC/SC
+   *  transport is wired — it NEVER silently falls back to a hex key). */
+  pivTransport?: PivTransport;
+  /** Secure no-echo PIN provider for `yubikey-piv:` sources. The PIN is
+   *  never read from argv/env-by-default and never logged. */
+  pivPin?: PivPinProvider;
 }
 
 export const defaultEnv: CliEnv = {
@@ -39,21 +51,21 @@ export const defaultEnv: CliEnv = {
   printerr: (line: string) => process.stderr.write(line + "\n"),
 };
 
-export function dispatch(args: ParsedArgs, env: CliEnv): number {
+export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
   try {
     switch (args.command) {
       case "genesis":
-        return runGenesis(args, env);
+        return await runGenesis(args, env);
       case "mandate":
-        return runMandate(args, env);
+        return await runMandate(args, env);
       case "endorsement":
-        return runEndorsement(args, env);
+        return await runEndorsement(args, env);
       case "takeover":
-        return runTakeover(args, env);
+        return await runTakeover(args, env);
       case "verify":
-        return runVerify(args, env);
+        return await runVerify(args, env);
       case "status":
-        return runStatus(args, env);
+        return await runStatus(args, env);
       case undefined:
       case "help":
       case "--help":
@@ -80,9 +92,9 @@ export function dispatch(args: ParsedArgs, env: CliEnv): number {
   }
 }
 
-export function run(argv: string[], env: CliEnv = defaultEnv): number {
+export async function run(argv: string[], env: CliEnv = defaultEnv): Promise<number> {
   const parsed = parseArgs(argv);
-  const code = dispatch(parsed, env);
+  const code = await dispatch(parsed, env);
   // run() returns; the bin shim calls process.exit. We avoid calling
   // process.exit here so the function is easy to unit-test.
   return code;

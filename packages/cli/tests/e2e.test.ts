@@ -72,14 +72,14 @@ function mkEnv(now: Date, lines: string[], errs: string[], uuid: () => string): 
 }
 
 describe("end-to-end CLI dispatch", () => {
-  it("genesis → mandate → verify exits 0 and reports a valid chain", () => {
+  it("genesis → mandate → verify exits 0 and reports a valid chain", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
     const uuid = makeUuidFactory();
 
     const env1 = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, uuid);
-    const code1 = dispatch(parseArgs([
+    const code1 = await dispatch(parseArgs([
       "genesis",
       "--track", "release",
       "--duration", "60d",
@@ -92,7 +92,7 @@ describe("end-to-end CLI dispatch", () => {
     expect(fs.existsSync(path.join(fx.cliRoot, "tracks/release/policy.json"))).toBe(true);
 
     const env2 = mkEnv(new Date("2026-02-15T00:00:00Z"), lines, errs, uuid);
-    const code2 = dispatch(parseArgs([
+    const code2 = await dispatch(parseArgs([
       "mandate",
       "--track", "release",
       "--duration", "60d",
@@ -102,7 +102,7 @@ describe("end-to-end CLI dispatch", () => {
     expect(code2).toBe(0);
 
     const env3 = mkEnv(new Date("2026-02-20T00:00:00Z"), lines, errs, uuid);
-    const code3 = dispatch(parseArgs([
+    const code3 = await dispatch(parseArgs([
       "verify",
       "--path", fx.cliRoot,
     ]), env3);
@@ -110,14 +110,14 @@ describe("end-to-end CLI dispatch", () => {
     expect(lines.join("\n")).toContain("verify: OK");
   });
 
-  it("status does not exit non-zero when policy file is missing", () => {
+  it("status does not exit non-zero when policy file is missing", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
     const uuid = makeUuidFactory();
 
     const env1 = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, uuid);
-    dispatch(parseArgs([
+    await dispatch(parseArgs([
       "genesis",
       "--track", "release",
       "--duration", "60d",
@@ -128,7 +128,7 @@ describe("end-to-end CLI dispatch", () => {
     fs.unlinkSync(path.join(fx.cliRoot, "tracks/release/policy.json"));
 
     const env2 = mkEnv(new Date("2026-01-15T00:00:00Z"), lines, errs, uuid);
-    const code = dispatch(parseArgs([
+    const code = await dispatch(parseArgs([
       "status",
       "--path", fx.cliRoot,
     ]), env2);
@@ -136,14 +136,14 @@ describe("end-to-end CLI dispatch", () => {
     expect(lines.join("\n")).toContain("policy:           MISSING");
   });
 
-  it("verify returns 1 when the policy file is missing", () => {
+  it("verify returns 1 when the policy file is missing", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
     const uuid = makeUuidFactory();
 
     const env1 = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, uuid);
-    dispatch(parseArgs([
+    await dispatch(parseArgs([
       "genesis",
       "--track", "release",
       "--duration", "60d",
@@ -154,37 +154,37 @@ describe("end-to-end CLI dispatch", () => {
     fs.unlinkSync(path.join(fx.cliRoot, "tracks/release/policy.json"));
 
     const env2 = mkEnv(new Date("2026-01-15T00:00:00Z"), lines, errs, uuid);
-    const code = dispatch(parseArgs([
+    const code = await dispatch(parseArgs([
       "verify",
       "--path", fx.cliRoot,
     ]), env2);
     expect(code).toBe(1);
   });
 
-  it("unknown command exits 2 with usage on stderr", () => {
+  it("unknown command exits 2 with usage on stderr", async () => {
     const lines: string[] = [];
     const errs: string[] = [];
     const env = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, makeUuidFactory());
-    const code = dispatch(parseArgs(["banana"]), env);
+    const code = await dispatch(parseArgs(["banana"]), env);
     expect(code).toBe(2);
     expect(errs.join("\n")).toContain("unknown command");
   });
 
-  it("help prints usage and exits 0", () => {
+  it("help prints usage and exits 0", async () => {
     const lines: string[] = [];
     const errs: string[] = [];
     const env = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, makeUuidFactory());
-    const code = dispatch(parseArgs(["help"]), env);
+    const code = await dispatch(parseArgs(["help"]), env);
     expect(code).toBe(0);
     expect(lines.join("\n")).toContain("authority-management CLI");
   });
 
-  it("CliError from a command translates to exit 1 with an error: prefix", () => {
+  it("CliError from a command translates to exit 1 with an error: prefix", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
     const env = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, makeUuidFactory());
-    const code = dispatch(parseArgs([
+    const code = await dispatch(parseArgs([
       "mandate",
       "--track", "release",
       "--duration", "60d",

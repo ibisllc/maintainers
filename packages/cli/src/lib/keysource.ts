@@ -338,3 +338,21 @@ export async function loadSignerPubKey(
   }
   return loadPubKey(source, opts.io ?? realFs).pubKey;
 }
+
+/**
+ * Resolve a comma-separated list of signing-style sources into public
+ * keys. Each element may be `file:` or `yubikey-piv:` (the latter is a
+ * no-PIN public read — used for the named successor / second-YubiKey
+ * during genesis, §11.2). Resolved sequentially: a single physical
+ * token can only service one read at a time.
+ */
+export async function loadSignerPubKeyList(
+  csv: string,
+  opts: SignerOptions = {},
+): Promise<string[]> {
+  if (csv.length === 0) return [];
+  const parts = csv.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  const out: string[] = [];
+  for (const p of parts) out.push(await loadSignerPubKey(p, opts));
+  return out;
+}
