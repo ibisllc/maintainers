@@ -7,26 +7,39 @@
  * can be the same person or a delegate. The takeover mandate's signedBy
  * MUST appear in the predecessor's successors[] list.
  *
- * Keys resolve via {@link loadSigner} / {@link loadSignerPubKey}: the
+ * Keys resolve via {@link loadSignerBoundPubKey} (preview, no PIN) /
+ * {@link loadSignerPubKey} / {@link loadSigner} (the real sign): the
  * successor key is normally a YubiKey PIV-resident Ed25519
  * (`yubikey-piv:slot=9c`, the second key named in the genesis
  * `successors`); `file:` hex is the lower-assurance fallback. ZERO wire
  * delta — a PIV-Ed25519 signature is byte-identical (§11.1).
  */
 
-import { signMandateWith, type Mandate } from "@maintainers/protocol";
+import { signMandateWith, canonicalMandate, type Mandate } from "@maintainers/protocol";
+import * as path from "node:path";
 import { parseDurationMs, isoFromMsSince } from "../lib/duration.js";
-import { CliError, type ParsedArgs, requireFlag, optionalFlag } from "../lib/args.js";
 import {
-  loadSigner,
+  CliError,
+  type ParsedArgs,
+  requireFlag,
+  optionalFlag,
+  boolFlag,
+} from "../lib/args.js";
+import {
   loadSignerPubKey,
+  loadSignerBoundPubKey,
   loadSignerPubKeyList,
   type KeySourceFs,
   type PivTransport,
   type PivPinProvider,
   type SignerOptions,
 } from "../lib/keysource.js";
-import { readStore, writeMandate } from "../lib/store.js";
+import {
+  type Assembled,
+  renderDryRun,
+  signAssembled,
+} from "../lib/ceremony.js";
+import { readStore, writeMandate, mandateFilename } from "../lib/store.js";
 
 export interface TakeoverOptions {
   track: string;
@@ -46,7 +59,16 @@ function signerOpts(opts: TakeoverOptions): SignerOptions {
   return { io: opts.io, pivTransport: opts.pivTransport, pivPin: opts.pivPin };
 }
 
-export async function buildTakeover(opts: TakeoverOptions): Promise<Mandate> {
+type UnsignedMandate = Omit<Mandate, "signatures">;
+
+/**
+ * Phase 1 — pure: read the store + PUBLIC keys (successor key resolved
+ * with NO PIN, NO tap, NO sign), enforce the successor-membership +
+ * predecessor-expiry rules, build the unsigned takeover mandate.
+ */
+export async function assembleTakeover(
+  opts: TakeoverOptions,
+): Promise<Assembled<UnsignedMandate>> {
   const store = readStore(opts.rootDir);
   const prior = store.mandatesByTrack.get(opts.track) ?? [];
   if (prior.length === 0) {
@@ -54,10 +76,10 @@ export async function buildTakeover(opts: TakeoverOptions): Promise<Mandate> {
   }
   const last = prior[prior.length - 1]!;
   const sopts = signerOpts(opts);
-  const signer = await loadSigner(opts.successorKeySource, sopts);
-  if (!last.successors.includes(signer.pubKey)) {
+  const successorPub = await loadSignerBoundPubKey(opts.successorKeySource, sopts);
+  if (!last.successors.includes(successorPub)) {
     throw new CliError(
-      `signer ${signer.pubKey.slice(0, 8)}… is not a named successor on the last mandate; valid successors: ${last.successors.map((s) => s.slice(0, 8) + "…").join(", ")}`,
+      `signer ${successorPub.slice(0, 8)}… is not a named successor on the last mandate; valid successors: ${last.successors.map((s) => s.slice(0, 8) + "…").join(", ")}`,
     );
   }
   const newHolderPub = await loadSignerPubKey(opts.newHolderSource, sopts);
@@ -70,26 +92,39 @@ export async function buildTakeover(opts: TakeoverOptions): Promise<Mandate> {
     );
   }
 
-  const issuedAt = new Date(issuedAtMs).toISOString();
-  const expiresAt = isoFromMsSince(issuedAtMs, parseDurationMs(opts.duration));
   const successors = opts.successorsSource
     ? await loadSignerPubKeyList(opts.successorsSource, sopts)
     : [newHolderPub];
+  const unsigned: UnsignedMandate = {
+    kind: "Mandate",
+    version: 1,
+    mandateId: opts.uuid(),
+    track: opts.track,
+    holder: newHolderPub,
+    issuedAt: new Date(issuedAtMs).toISOString(),
+    expiresAt: isoFromMsSince(issuedAtMs, parseDurationMs(opts.duration)),
+    successors,
+    signedBy: successorPub,
+  };
+  return {
+    ceremony: "takeover",
+    unsigned,
+    canonical: canonicalMandate(unsigned),
+    signingKeySource: opts.successorKeySource,
+    signedBy: successorPub,
+    rootDir: opts.rootDir,
+    targetRelative: path.join(
+      "tracks",
+      opts.track,
+      "mandates",
+      mandateFilename(unsigned),
+    ),
+  };
+}
 
-  return signMandateWith(
-    {
-      kind: "Mandate",
-      version: 1,
-      mandateId: opts.uuid(),
-      track: opts.track,
-      holder: newHolderPub,
-      issuedAt,
-      expiresAt,
-      successors,
-      signedBy: signer.pubKey,
-    },
-    [signer],
-  );
+export async function buildTakeover(opts: TakeoverOptions): Promise<Mandate> {
+  const a = await assembleTakeover(opts);
+  return signAssembled(a, signMandateWith, signerOpts(opts));
 }
 
 export interface TakeoverCmdEnv {
@@ -108,8 +143,9 @@ export async function runTakeover(args: ParsedArgs, env: TakeoverCmdEnv): Promis
   const newHolder = requireFlag(args, "new-holder");
   const successorsCsv = optionalFlag(args, "successors");
   const rootDir = optionalFlag(args, "path") ?? ".maintainers";
+  const dryRun = boolFlag(args, "dry-run");
 
-  const m = await buildTakeover({
+  const a = await assembleTakeover({
     track,
     duration,
     successorKeySource: successorKey,
@@ -122,7 +158,19 @@ export async function runTakeover(args: ParsedArgs, env: TakeoverCmdEnv): Promis
     pivTransport: env.pivTransport,
     pivPin: env.pivPin,
   });
-  const written = writeMandate(rootDir, m);
+
+  if (dryRun) {
+    renderDryRun(a, env.println);
+    return 0;
+  }
+
+  const sopts: SignerOptions = {
+    io: env.io,
+    pivTransport: env.pivTransport,
+    pivPin: env.pivPin,
+  };
+  const m = await signAssembled(a, signMandateWith, sopts);
+  const written = writeMandate(a.rootDir, m);
   env.println(`wrote takeover mandate for track "${track}" → ${written.relative}`);
   env.println(`  new holder: ${m.holder}`);
   env.println(`  signed by:  ${m.signedBy}`);

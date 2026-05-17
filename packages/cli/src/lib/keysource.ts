@@ -340,6 +340,44 @@ export async function loadSignerPubKey(
 }
 
 /**
+ * The public key that {@link loadSigner}(source) would bind — resolved
+ * WITHOUT a PIN and WITHOUT producing a signer (cannot sign).
+ *
+ *   yubikey-piv:slot=9c   PIV public read (no PIN, no tap, no sign)
+ *   file:<path>           derive the pubkey from the local hex priv
+ *                         (the lower-assurance air-gapped/successor
+ *                         fallback — the key is already a plaintext
+ *                         local file the operator chose; we derive but
+ *                         never sign and never log it)
+ *
+ * This differs from {@link loadSignerPubKey}, which treats a `file:`
+ * source as a *public* key (correct for `--holder-key`/`--new-holder`/
+ * successors). A *signing* `file:` source is a private key, so its bound
+ * pubkey must be DERIVED to match what `loadSigner` produces. Used by
+ * the `--dry-run` preview so the previewed canonical bytes are exactly
+ * what the real run would sign — without touching the token's private
+ * operation or writing anything.
+ */
+export async function loadSignerBoundPubKey(
+  source: string,
+  opts: SignerOptions = {},
+): Promise<string> {
+  if (isPivSource(source)) {
+    const { slot } = parsePivSource(source);
+    const transport = opts.pivTransport ?? realPivTransport;
+    const pub = normalizeHex(await transport.getPublicKey(slot));
+    if (!isHex64(pub)) {
+      throw new CliError(
+        `yubikey-piv: token returned a malformed public key for slot ${slot}`,
+      );
+    }
+    return pub;
+  }
+  // file: (or anything loadPrivKey accepts) — derive, same as loadSigner.
+  return loadPrivKey(source, opts.io ?? realFs).pubKey;
+}
+
+/**
  * Resolve a comma-separated list of signing-style sources into public
  * keys. Each element may be `file:` or `yubikey-piv:` (the latter is a
  * no-PIN public read — used for the named successor / second-YubiKey

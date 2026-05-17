@@ -2,11 +2,15 @@
  * maintainers CLI entrypoint.
  *
  * Usage:
- *   maintainers genesis        --track <name> --duration <60d> --holder-key <key> [--signing-key <key>]
- *   maintainers mandate        --track <name> --duration <60d> --signing-key <key> [--successors a,b]
+ *   maintainers genesis        --track <name> --duration <60d> --holder-key <key> [--signing-key <key>] [--dry-run]
+ *   maintainers mandate        --track <name> --duration <60d> --signing-key <key> [--successors a,b] [--dry-run]
  *   maintainers endorsement    --commit <40hex> --tag <semver> [--previous-id <uuid> --previous-commit <40hex>] [--intermediates auto|file:X|csv] --signing-key <key>
- *   maintainers ca-endorsement --ca-pubkey <64hex> [--scope S] [--duration 7d] [--track ca] --signing-key <key>
- *   maintainers takeover       --track <name> --successor-key <key> --new-holder <key>
+ *   maintainers ca-endorsement --ca-pubkey <64hex> [--scope S] [--duration 7d] [--track ca] --signing-key <key> [--dry-run]
+ *   maintainers takeover       --track <name> --successor-key <key> --new-holder <key> [--dry-run]
+ *
+ *   --dry-run: print the EXACT canonical bytes a real run would sign + the
+ *   would-write .maintainers diff; sign nothing, write nothing, no PIN/tap
+ *   (pubkeys resolved via the no-PIN public read only).
  *   maintainers verify         [--path ./.maintainers/] [--as-of <RFC3339|now>]
  *   maintainers status         [--path ./.maintainers/] [--as-of <RFC3339|now>]
  *
@@ -116,24 +120,28 @@ function printUsage(println: (s: string) => void): void {
   println("maintainers — authority-management CLI");
   println("");
   println("commands:");
-  println("  genesis         --track NAME --duration 60d --holder-key KEY [--signing-key KEY] [--successors A,B] [--output DIR]");
-  println("  mandate         --track NAME --duration 60d --signing-key KEY [--successors A,B] [--path .maintainers]");
+  println("  genesis         --track NAME --duration 60d --holder-key KEY [--signing-key KEY] [--successors A,B] [--output DIR] [--dry-run]");
+  println("  mandate         --track NAME --duration 60d --signing-key KEY [--successors A,B] [--path .maintainers] [--dry-run]");
   println("  endorsement     --commit 40HEX --tag SEMVER --signing-key KEY [--previous-id UUID --previous-commit 40HEX] [--intermediates auto|file:X|csv] [--track release] [--path .maintainers]");
-  println("  ca-endorsement  --ca-pubkey 64HEX --signing-key KEY [--scope S] [--duration 7d] [--track ca] [--path .maintainers]");
-  println("  takeover        --track NAME --successor-key KEY --new-holder KEY [--successors A,B] [--duration 60d] [--path .maintainers]");
+  println("  ca-endorsement  --ca-pubkey 64HEX --signing-key KEY [--scope S] [--duration 7d] [--track ca] [--path .maintainers] [--dry-run]");
+  println("  takeover        --track NAME --successor-key KEY --new-holder KEY [--successors A,B] [--duration 60d] [--path .maintainers] [--dry-run]");
   println("  verify          [--path .maintainers] [--as-of RFC3339|now]");
   println("  status          [--path .maintainers] [--as-of RFC3339|now]");
   println("");
   println("key sources (KEY):");
   println("  file:<path>           local 32-byte hex Ed25519 key (priv or pub) — air-gapped/successor fallback");
   println("  yubikey-piv:slot=9c   YubiKey PIV-resident Ed25519 — the supported maintainer-root path");
+  println("");
+  println("  --dry-run  print the EXACT canonical bytes + the .maintainers diff that");
+  println("             WOULD be written; sign nothing, write nothing, no PIN/tap.");
 }
 
 // Re-exports so tests and embedders can drive the CLI without spawning a process.
 export { parseArgs } from "./lib/args.js";
-export { buildGenesis } from "./commands/genesis.js";
-export { buildRenewal } from "./commands/mandate.js";
+export { buildGenesis, assembleGenesis } from "./commands/genesis.js";
+export { buildRenewal, assembleRenewal } from "./commands/mandate.js";
 export { buildEndorsement } from "./commands/endorsement.js";
-export { buildCaEndorsement } from "./commands/caEndorsement.js";
-export { buildTakeover } from "./commands/takeover.js";
+export { buildCaEndorsement, assembleCaEndorsement } from "./commands/caEndorsement.js";
+export { buildTakeover, assembleTakeover } from "./commands/takeover.js";
 export { buildReport } from "./commands/verify.js";
+export { renderDryRun, signAssembled, type Assembled } from "./lib/ceremony.js";

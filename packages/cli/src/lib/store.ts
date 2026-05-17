@@ -139,13 +139,7 @@ export function writeCaEndorsement(
 ): WrittenPath {
   const dir = path.join(rootDir, "ca-endorsements");
   fs.mkdirSync(dir, { recursive: true });
-  const compact = e.notBefore
-    .replace(/[:\-]/g, "")
-    .replace(/\..*Z$/, "Z")
-    .replace(/Z$/, "")
-    .replace(/[^0-9T]/g, "");
-  const shortId = e.endorsementId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
-  const abs = path.join(dir, `${compact}-${shortId}.json`);
+  const abs = path.join(dir, caEndorsementFilename(e));
   if (fs.existsSync(abs)) {
     throw new CliError(`refusing to overwrite existing CA lease file: ${abs}`);
   }
@@ -179,13 +173,33 @@ export function writeRootPolicyIfMissing(
 /**
  * Build a mandate filename: `<iso-zulu-compact>-<short-id>.json`. The compact
  * timestamp keeps directory listings sortable; the short id disambiguates
- * mandates issued in the same second.
+ * mandates issued in the same second. Accepts the unsigned shape too so the
+ * `--dry-run` preview can show the exact path that WOULD be written.
  */
-export function mandateFilename(m: Mandate): string {
+export function mandateFilename(m: Pick<Mandate, "issuedAt" | "mandateId">): string {
   const compact = m.issuedAt.replace(/[:\-]/g, "").replace(/\..*Z$/, "Z").replace(/Z$/, "");
   const safeCompact = compact.replace(/[^0-9T]/g, "");
   const shortId = m.mandateId.slice(0, 8);
   return `${safeCompact}-${shortId}.json`;
+}
+
+/**
+ * Build a CA-lease filename: `<compact-notBefore>-<short-id>.json`. The
+ * single source of truth for the `ca-endorsements/` filename convention
+ * (used by {@link writeCaEndorsement} and the `--dry-run` preview);
+ * `scripts/rotate-ca.mjs` reads any `*.json` here regardless of name, so
+ * this only governs sortability/uniqueness, not discovery.
+ */
+export function caEndorsementFilename(
+  e: Pick<CaEndorsement, "notBefore" | "endorsementId">,
+): string {
+  const compact = e.notBefore
+    .replace(/[:\-]/g, "")
+    .replace(/\..*Z$/, "Z")
+    .replace(/Z$/, "")
+    .replace(/[^0-9T]/g, "");
+  const shortId = e.endorsementId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
+  return `${compact}-${shortId}.json`;
 }
 
 function readJson(p: string): unknown {

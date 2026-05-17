@@ -9,8 +9,9 @@
  * weekly chore — `docs/ca-operations.md` Operation 1, Path B (the CLI
  * path that document referenced before this command existed).
  *
- * Signed by the cold maintainer key resolved through {@link loadSigner}:
- * the supported path is a YubiKey PIV-resident Ed25519
+ * Signed by the cold maintainer key resolved through
+ * {@link loadSignerBoundPubKey} (preview, no PIN) then {@link loadSigner}
+ * (the real sign): the supported path is a YubiKey PIV-resident Ed25519
  * (`yubikey-piv:slot=9c`) whose private half never leaves the token;
  * `file:` hex is the lower-assurance air-gapped/successor fallback. A
  * PIV-Ed25519 signature over the canonical bytes is byte-identical
@@ -24,17 +25,33 @@
  * non-expert successor is warned without being falsely blocked.
  */
 
-import { signCaEndorsementWith, type CaEndorsement } from "@maintainers/protocol";
-import { parseDurationMs, isoFromMsSince } from "../lib/duration.js";
-import { CliError, type ParsedArgs, requireFlag, optionalFlag } from "../lib/args.js";
 import {
-  loadSigner,
+  signCaEndorsementWith,
+  canonicalCaEndorsement,
+  type CaEndorsement,
+} from "@maintainers/protocol";
+import * as path from "node:path";
+import { parseDurationMs, isoFromMsSince } from "../lib/duration.js";
+import {
+  CliError,
+  type ParsedArgs,
+  requireFlag,
+  optionalFlag,
+  boolFlag,
+} from "../lib/args.js";
+import {
+  loadSignerBoundPubKey,
   type KeySourceFs,
   type PivTransport,
   type PivPinProvider,
   type SignerOptions,
 } from "../lib/keysource.js";
-import { readStore, writeCaEndorsement } from "../lib/store.js";
+import {
+  type Assembled,
+  renderDryRun,
+  signAssembled,
+} from "../lib/ceremony.js";
+import { readStore, writeCaEndorsement, caEndorsementFilename } from "../lib/store.js";
 
 export const DEFAULT_CA_SCOPE = "flagship/directory-attestation";
 export const DEFAULT_CA_TRACK = "ca";
@@ -46,6 +63,9 @@ export interface CaEndorsementOptions {
   duration: string;
   track: string;
   signingKeySource: string;
+  /** Store root (for the would-write path + the on-disk advisory).
+   *  Defaults to ".maintainers"; not needed to produce the envelope. */
+  rootDir?: string;
   now: () => Date;
   io: KeySourceFs;
   uuid: () => string;
@@ -77,36 +97,60 @@ function expectCaPubkey(raw: string): string {
   return hex;
 }
 
-export async function buildCaEndorsement(
+type UnsignedCaEndorsement = Omit<CaEndorsement, "signatures">;
+
+/**
+ * Phase 1 — pure: validate `--ca-pubkey`, read the signer's PUBLIC key
+ * (no PIN/tap/sign/write), build the unsigned lease + canonical bytes +
+ * target path.
+ */
+export async function assembleCaEndorsement(
   opts: CaEndorsementOptions,
-): Promise<CaEndorsement> {
+): Promise<Assembled<UnsignedCaEndorsement>> {
   const sopts: SignerOptions = {
     io: opts.io,
     pivTransport: opts.pivTransport,
     pivPin: opts.pivPin,
   };
   const caPubkey = expectCaPubkey(opts.caPubkey);
-  const signer = await loadSigner(opts.signingKeySource, sopts);
+  const signerPub = await loadSignerBoundPubKey(opts.signingKeySource, sopts);
 
   const issuedAtMs = opts.now().getTime();
   const issuedAt = new Date(issuedAtMs).toISOString();
-  const notAfter = isoFromMsSince(issuedAtMs, parseDurationMs(opts.duration));
+  const unsigned: UnsignedCaEndorsement = {
+    kind: "CaEndorsement",
+    version: 1,
+    endorsementId: opts.uuid(),
+    track: opts.track,
+    caPubkey,
+    scope: opts.scope,
+    notBefore: issuedAt,
+    notAfter: isoFromMsSince(issuedAtMs, parseDurationMs(opts.duration)),
+    issuedAt,
+    signedBy: signerPub,
+  };
+  const rootDir = opts.rootDir ?? ".maintainers";
+  return {
+    ceremony: "ca-endorsement",
+    unsigned,
+    canonical: canonicalCaEndorsement(unsigned),
+    signingKeySource: opts.signingKeySource,
+    signedBy: signerPub,
+    rootDir,
+    targetRelative: path.join("ca-endorsements", caEndorsementFilename(unsigned)),
+  };
+}
 
-  return signCaEndorsementWith(
-    {
-      kind: "CaEndorsement",
-      version: 1,
-      endorsementId: opts.uuid(),
-      track: opts.track,
-      caPubkey,
-      scope: opts.scope,
-      notBefore: issuedAt,
-      notAfter,
-      issuedAt,
-      signedBy: signer.pubKey,
-    },
-    [signer],
-  );
+export async function buildCaEndorsement(
+  opts: CaEndorsementOptions,
+): Promise<CaEndorsement> {
+  const a = await assembleCaEndorsement(opts);
+  const sopts: SignerOptions = {
+    io: opts.io,
+    pivTransport: opts.pivTransport,
+    pivPin: opts.pivPin,
+  };
+  return signAssembled(a, signCaEndorsementWith, sopts);
 }
 
 export interface CaEndorsementCmdEnv {
@@ -143,13 +187,15 @@ export async function runCaEndorsement(
   const track = optionalFlag(args, "track") ?? DEFAULT_CA_TRACK;
   const signingKey = requireFlag(args, "signing-key");
   const rootDir = optionalFlag(args, "path") ?? ".maintainers";
+  const dryRun = boolFlag(args, "dry-run");
 
-  const e = await buildCaEndorsement({
+  const a = await assembleCaEndorsement({
     caPubkey,
     scope,
     duration,
     track,
     signingKeySource: signingKey,
+    rootDir,
     now: env.now,
     io: env.io,
     uuid: env.uuid,
@@ -165,9 +211,9 @@ export async function runCaEndorsement(
         `may not be present yet). Verifiers decide authority at their own ` +
         `clock — issue it, but check with "rotate-ca status".`,
     );
-  } else if (!authority.has(e.signedBy)) {
+  } else if (!authority.has(a.signedBy)) {
     env.println(
-      `note: signer ${e.signedBy.slice(0, 8)}… is not a current ${track}-` +
+      `note: signer ${a.signedBy.slice(0, 8)}… is not a current ${track}-` +
         `track holder/successor on disk here. This can be legitimate (a ` +
         `fresh takeover, or an out-of-date local clone) — authority is ` +
         `judged at the verifier's clock — but DOUBLE-CHECK before relying ` +
@@ -175,7 +221,19 @@ export async function runCaEndorsement(
     );
   }
 
-  const written = writeCaEndorsement(rootDir, e);
+  if (dryRun) {
+    renderDryRun(a, env.println);
+    return 0;
+  }
+
+  const sopts: SignerOptions = {
+    io: env.io,
+    pivTransport: env.pivTransport,
+    pivPin: env.pivPin,
+  };
+  const e = await signAssembled(a, signCaEndorsementWith, sopts);
+
+  const written = writeCaEndorsement(a.rootDir, e);
   env.println(`wrote CA lease for track "${track}" → ${written.relative}`);
   env.println(`  endorsementId: ${e.endorsementId}`);
   env.println(`  caPubkey:      ${e.caPubkey}`);
