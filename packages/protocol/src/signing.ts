@@ -196,3 +196,75 @@ export async function signCaEndorsementWith(
   const bytes = canonicalCaEndorsement(unsigned);
   return { ...unsigned, signatures: await collectSignatures(bytes, signers) };
 }
+
+/**
+ * The identity envelopes (KeyFile, KeyRedirect, EmailRotation) carry a
+ * SINGLE self-signature: each is signed by the very key it describes,
+ * so the external signer's `pubKey` MUST equal the envelope's `pubkey`
+ * field (mirrors the sync `sign*` invariant for the YubiKey-PIV path
+ * so a key can self-register from a token). Byte-identical RFC-8032
+ * Ed25519 — ZERO canonical/verifier/wire/spec change (the §11.1
+ * linchpin). Exactly one signer (these are never M-of-N).
+ */
+async function selfSignature(
+  label: string,
+  bytes: Uint8Array,
+  pubkey: string,
+  signers: Ed25519Signer[],
+): Promise<string> {
+  if (signers.length !== 1) {
+    throw new Error(`${label}: exactly one self-signer is required`);
+  }
+  const signer = signers[0]!;
+  if (signer.pubKey !== pubkey) {
+    throw new Error(
+      `${label}: signer does not correspond to the envelope's pubkey field`,
+    );
+  }
+  return signer.sign(bytes);
+}
+
+/** {@link signKeyFile} with an external (e.g. YubiKey-PIV) self-signer. */
+export async function signKeyFileWith(
+  unsigned: Omit<KeyFile, "signature">,
+  signers: Ed25519Signer[],
+): Promise<KeyFile> {
+  const bytes = canonicalKeyFile(unsigned);
+  const signature = await selfSignature(
+    "signKeyFileWith",
+    bytes,
+    unsigned.pubkey,
+    signers,
+  );
+  return { ...unsigned, signature };
+}
+
+/** {@link signKeyRedirect} with an external self-signer. */
+export async function signKeyRedirectWith(
+  unsigned: Omit<KeyRedirect, "signature">,
+  signers: Ed25519Signer[],
+): Promise<KeyRedirect> {
+  const bytes = canonicalKeyRedirect(unsigned);
+  const signature = await selfSignature(
+    "signKeyRedirectWith",
+    bytes,
+    unsigned.pubkey,
+    signers,
+  );
+  return { ...unsigned, signature };
+}
+
+/** {@link signEmailRotation} with an external self-signer. */
+export async function signEmailRotationWith(
+  unsigned: Omit<EmailRotation, "signature">,
+  signers: Ed25519Signer[],
+): Promise<EmailRotation> {
+  const bytes = canonicalEmailRotation(unsigned);
+  const signature = await selfSignature(
+    "signEmailRotationWith",
+    bytes,
+    unsigned.pubkey,
+    signers,
+  );
+  return { ...unsigned, signature };
+}
