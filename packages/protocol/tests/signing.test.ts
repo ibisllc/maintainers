@@ -3,7 +3,7 @@
  * envelope whose canonical bytes verify against the produced signature.
  */
 import { describe, expect, it } from "vitest";
-import { generateKeypair, verify } from "../src/crypto.js";
+import { generateKeypair, sign, verify } from "../src/crypto.js";
 import {
   signEmailRotation,
   signKeyFile,
@@ -11,6 +11,12 @@ import {
   signKeyRedirect,
   signMandate,
   signReleaseEndorsement,
+  signCaEndorsement,
+  privKeySigner,
+  signMandateWith,
+  signReleaseEndorsementWith,
+  signCaEndorsementWith,
+  type Ed25519Signer,
 } from "../src/signing.js";
 import {
   canonicalEmailRotation,
@@ -19,6 +25,7 @@ import {
   canonicalKeyRedirect,
   canonicalMandate,
   canonicalReleaseEndorsement,
+  canonicalCaEndorsement,
 } from "../src/canonical.js";
 
 function keypair(seedByte: number) {
@@ -161,5 +168,129 @@ describe("sign* roundtrips", () => {
     );
     const bytes = canonicalReleaseEndorsement(e);
     expect(verify(e.signatures[0]!.sig, bytes, alice.pubKey)).toBe(true);
+  });
+});
+
+describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
+  const mandate = (holder: string) => ({
+    kind: "Mandate" as const,
+    version: 1 as const,
+    mandateId: "m1",
+    track: "ca",
+    holder,
+    issuedAt: "2026-03-01T00:00:00Z",
+    expiresAt: "2026-09-01T00:00:00Z",
+    successors: [holder],
+    signedBy: holder,
+  });
+  const caEndorsement = (signedBy: string) => ({
+    kind: "CaEndorsement" as const,
+    version: 1 as const,
+    endorsementId: "ca-e1",
+    track: "ca",
+    caPubkey: "ab".repeat(32),
+    scope: "flagship/directory-attestation",
+    notBefore: "2026-03-01T00:00:00Z",
+    notAfter: "2026-03-08T00:00:00Z",
+    issuedAt: "2026-03-01T00:00:00Z",
+    signedBy,
+  });
+  const releaseEndorsement = (signedBy: string) => ({
+    kind: "ReleaseEndorsement" as const,
+    version: 1 as const,
+    releaseId: "r1",
+    semverTag: "v0.1.0",
+    commitHash: "0".repeat(40),
+    previousReleaseId: null,
+    previousCommitHash: null,
+    intermediateCommits: [],
+    intermediateMerkleRoot:
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    endorsedNotes: null,
+    issuedAt: "2026-02-01T00:00:00Z",
+    signedBy,
+  });
+
+  /**
+   * A signer that mimics a hardware token: it holds the key "out of
+   * process" (the test closes over it, the protocol code never sees a
+   * privKey) and is async, like a PC/SC/NFC round-trip. It still emits
+   * standard RFC-8032 Ed25519 over the presented bytes.
+   */
+  function fakeTokenSigner(priv: string, pub: string): Ed25519Signer {
+    return {
+      pubKey: pub,
+      async sign(message) {
+        await Promise.resolve();
+        return sign(message, priv);
+      },
+    };
+  }
+
+  it("privKeySigner produces byte-identical output to the sync path (Mandate)", async () => {
+    const a = keypair(1);
+    const sync = signMandate(mandate(a.pubKey), [{ privKey: a.privKey }]);
+    const viaSigner = await signMandateWith(mandate(a.pubKey), [
+      privKeySigner(a.privKey),
+    ]);
+    expect(viaSigner).toEqual(sync);
+  });
+
+  it("privKeySigner is byte-identical for CaEndorsement (the weekly lease)", async () => {
+    const a = keypair(2);
+    const sync = signCaEndorsement(caEndorsement(a.pubKey), [
+      { privKey: a.privKey },
+    ]);
+    const viaSigner = await signCaEndorsementWith(caEndorsement(a.pubKey), [
+      privKeySigner(a.privKey),
+    ]);
+    expect(viaSigner).toEqual(sync);
+    expect(
+      verify(
+        viaSigner.signatures[0]!.sig,
+        canonicalCaEndorsement(viaSigner),
+        a.pubKey,
+      ),
+    ).toBe(true);
+  });
+
+  it("privKeySigner is byte-identical for ReleaseEndorsement", async () => {
+    const a = keypair(3);
+    const sync = signReleaseEndorsement(releaseEndorsement(a.pubKey), [
+      { privKey: a.privKey },
+    ]);
+    const viaSigner = await signReleaseEndorsementWith(
+      releaseEndorsement(a.pubKey),
+      [privKeySigner(a.privKey)],
+    );
+    expect(viaSigner).toEqual(sync);
+  });
+
+  it("an external async (token-shaped) signer produces a verifiable envelope", async () => {
+    const a = keypair(4);
+    const ca = await signCaEndorsementWith(caEndorsement(a.pubKey), [
+      fakeTokenSigner(a.privKey, a.pubKey),
+    ]);
+    // Identical to having signed with the raw key — the wire format,
+    // canonical bytes and verifier are untouched (the §11.1 linchpin).
+    expect(ca).toEqual(
+      signCaEndorsement(caEndorsement(a.pubKey), [{ privKey: a.privKey }]),
+    );
+    expect(
+      verify(ca.signatures[0]!.sig, canonicalCaEndorsement(ca), a.pubKey),
+    ).toBe(true);
+  });
+
+  it("collects multiple signers in order (M-of-N), token + hex mixed", async () => {
+    const a = keypair(5);
+    const b = keypair(6);
+    const m = await signMandateWith(mandate(a.pubKey), [
+      fakeTokenSigner(a.privKey, a.pubKey),
+      privKeySigner(b.privKey),
+    ]);
+    expect(m.signatures.map((s) => s.pubkey)).toEqual([a.pubKey, b.pubKey]);
+    const bytes = canonicalMandate(m);
+    expect(verify(m.signatures[0]!.sig, bytes, a.pubKey)).toBe(true);
+    expect(verify(m.signatures[1]!.sig, bytes, b.pubKey)).toBe(true);
   });
 });

@@ -62,6 +62,17 @@ export function optionalFlag(args: ParsedArgs, name: string): string | undefined
   return undefined;
 }
 
+/**
+ * A presence/boolean flag (`--dry-run`, `--yes`). True for a bare
+ * `--flag`, `--flag=true`, or `--flag true`. Anything else is false —
+ * never throws, so a security-relevant gate (confirm bypass / dry-run)
+ * fails *safe* (the safe side is "do NOT bypass" / "do NOT write").
+ */
+export function boolFlag(args: ParsedArgs, name: string): boolean {
+  const v = args.flags[name];
+  return v === true || v === "true";
+}
+
 export class CliError extends Error {
   constructor(message: string) {
     super(message);

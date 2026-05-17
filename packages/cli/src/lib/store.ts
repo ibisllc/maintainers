@@ -7,7 +7,8 @@
  *   ├── keys/<email>.json
  *   ├── tracks/<track>/policy.json
  *   ├── tracks/<track>/mandates/<iso>-<summary>.json
- *   └── endorsements/<semver-tag>.json
+ *   ├── endorsements/<semver-tag>.json
+ *   └── ca-endorsements/<iso>-<short-id>.json   (the weekly CA lease)
  *
  * The reader returns parsed envelopes; the writer canonicalizes filenames and
  * refuses to overwrite. Both sides are pure-fs and have no git awareness —
@@ -17,6 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  CaEndorsement,
   Mandate,
   ReleaseEndorsement,
   RootPolicy,
@@ -120,6 +122,31 @@ export function writeEndorsement(rootDir: string, e: ReleaseEndorsement): Writte
   return { absolute: abs, relative: path.relative(rootDir, abs) };
 }
 
+/**
+ * Write a CaEndorsement (the weekly CA lease) under
+ * `<rootDir>/ca-endorsements/`. This directory + filename convention is
+ * the on-disk store contract for CA leases — `scripts/rotate-ca.mjs`
+ * `readCaEndorsements()` reads exactly `<rootDir>/ca-endorsements/*.json`
+ * and accepts any file whose JSON `kind === "CaEndorsement"`. The
+ * compact-`notBefore` prefix keeps directory listings chronologically
+ * sortable; the short id disambiguates leases issued in the same second.
+ * Append-only: refuses to overwrite (overlapping leases are distinct
+ * files, by design — §5.1).
+ */
+export function writeCaEndorsement(
+  rootDir: string,
+  e: CaEndorsement,
+): WrittenPath {
+  const dir = path.join(rootDir, "ca-endorsements");
+  fs.mkdirSync(dir, { recursive: true });
+  const abs = path.join(dir, caEndorsementFilename(e));
+  if (fs.existsSync(abs)) {
+    throw new CliError(`refusing to overwrite existing CA lease file: ${abs}`);
+  }
+  fs.writeFileSync(abs, JSON.stringify(e, null, 2) + "\n", "utf8");
+  return { absolute: abs, relative: path.relative(rootDir, abs) };
+}
+
 export function writeTrackPolicyIfMissing(
   rootDir: string,
   policy: TrackPolicy,
@@ -146,13 +173,33 @@ export function writeRootPolicyIfMissing(
 /**
  * Build a mandate filename: `<iso-zulu-compact>-<short-id>.json`. The compact
  * timestamp keeps directory listings sortable; the short id disambiguates
- * mandates issued in the same second.
+ * mandates issued in the same second. Accepts the unsigned shape too so the
+ * `--dry-run` preview can show the exact path that WOULD be written.
  */
-export function mandateFilename(m: Mandate): string {
+export function mandateFilename(m: Pick<Mandate, "issuedAt" | "mandateId">): string {
   const compact = m.issuedAt.replace(/[:\-]/g, "").replace(/\..*Z$/, "Z").replace(/Z$/, "");
   const safeCompact = compact.replace(/[^0-9T]/g, "");
   const shortId = m.mandateId.slice(0, 8);
   return `${safeCompact}-${shortId}.json`;
+}
+
+/**
+ * Build a CA-lease filename: `<compact-notBefore>-<short-id>.json`. The
+ * single source of truth for the `ca-endorsements/` filename convention
+ * (used by {@link writeCaEndorsement} and the `--dry-run` preview);
+ * `scripts/rotate-ca.mjs` reads any `*.json` here regardless of name, so
+ * this only governs sortability/uniqueness, not discovery.
+ */
+export function caEndorsementFilename(
+  e: Pick<CaEndorsement, "notBefore" | "endorsementId">,
+): string {
+  const compact = e.notBefore
+    .replace(/[:\-]/g, "")
+    .replace(/\..*Z$/, "Z")
+    .replace(/Z$/, "")
+    .replace(/[^0-9T]/g, "");
+  const shortId = e.endorsementId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
+  return `${compact}-${shortId}.json`;
 }
 
 function readJson(p: string): unknown {

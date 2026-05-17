@@ -6,8 +6,8 @@
 // follow-up will publish `dist/index.js` as the protocol package's main,
 // at which point this shim becomes pure plain Node.
 import("../dist/index.js")
-  .then((m) => {
-    const code = m.run(process.argv.slice(2));
+  .then((m) => m.run(process.argv.slice(2)))
+  .then((code) => {
     if (typeof code === "number") process.exit(code);
   })
   .catch((err) => {
