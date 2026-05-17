@@ -7,7 +7,8 @@
  *   ├── keys/<email>.json
  *   ├── tracks/<track>/policy.json
  *   ├── tracks/<track>/mandates/<iso>-<summary>.json
- *   └── endorsements/<semver-tag>.json
+ *   ├── endorsements/<semver-tag>.json
+ *   └── ca-endorsements/<iso>-<short-id>.json   (the weekly CA lease)
  *
  * The reader returns parsed envelopes; the writer canonicalizes filenames and
  * refuses to overwrite. Both sides are pure-fs and have no git awareness —
@@ -17,6 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  CaEndorsement,
   Mandate,
   ReleaseEndorsement,
   RootPolicy,
@@ -115,6 +117,37 @@ export function writeEndorsement(rootDir: string, e: ReleaseEndorsement): Writte
   const abs = path.join(dir, file);
   if (fs.existsSync(abs)) {
     throw new CliError(`refusing to overwrite existing endorsement file: ${abs}`);
+  }
+  fs.writeFileSync(abs, JSON.stringify(e, null, 2) + "\n", "utf8");
+  return { absolute: abs, relative: path.relative(rootDir, abs) };
+}
+
+/**
+ * Write a CaEndorsement (the weekly CA lease) under
+ * `<rootDir>/ca-endorsements/`. This directory + filename convention is
+ * the on-disk store contract for CA leases — `scripts/rotate-ca.mjs`
+ * `readCaEndorsements()` reads exactly `<rootDir>/ca-endorsements/*.json`
+ * and accepts any file whose JSON `kind === "CaEndorsement"`. The
+ * compact-`notBefore` prefix keeps directory listings chronologically
+ * sortable; the short id disambiguates leases issued in the same second.
+ * Append-only: refuses to overwrite (overlapping leases are distinct
+ * files, by design — §5.1).
+ */
+export function writeCaEndorsement(
+  rootDir: string,
+  e: CaEndorsement,
+): WrittenPath {
+  const dir = path.join(rootDir, "ca-endorsements");
+  fs.mkdirSync(dir, { recursive: true });
+  const compact = e.notBefore
+    .replace(/[:\-]/g, "")
+    .replace(/\..*Z$/, "Z")
+    .replace(/Z$/, "")
+    .replace(/[^0-9T]/g, "");
+  const shortId = e.endorsementId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
+  const abs = path.join(dir, `${compact}-${shortId}.json`);
+  if (fs.existsSync(abs)) {
+    throw new CliError(`refusing to overwrite existing CA lease file: ${abs}`);
   }
   fs.writeFileSync(abs, JSON.stringify(e, null, 2) + "\n", "utf8");
   return { absolute: abs, relative: path.relative(rootDir, abs) };

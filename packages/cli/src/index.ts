@@ -2,16 +2,25 @@
  * maintainers CLI entrypoint.
  *
  * Usage:
- *   maintainers genesis     --track <name> --duration <60d> --holder-key file:./pub
- *   maintainers mandate     --track <name> --duration <60d> [--successors file:a,file:b]
- *   maintainers endorsement --commit <40hex> --tag <semver> [--previous-id <uuid> --previous-commit <40hex>] [--intermediates auto|file:X|csv] --signing-key file:./priv
- *   maintainers takeover    --track <name> --successor-key file:./priv --new-holder file:./pub
- *   maintainers verify      [--path ./.maintainers/] [--as-of <RFC3339|now>]
- *   maintainers status      [--path ./.maintainers/] [--as-of <RFC3339|now>]
+ *   maintainers genesis        --track <name> --duration <60d> --holder-key <key> [--signing-key <key>]
+ *   maintainers mandate        --track <name> --duration <60d> --signing-key <key> [--successors a,b]
+ *   maintainers endorsement    --commit <40hex> --tag <semver> [--previous-id <uuid> --previous-commit <40hex>] [--intermediates auto|file:X|csv] --signing-key <key>
+ *   maintainers ca-endorsement --ca-pubkey <64hex> [--scope S] [--duration 7d] [--track ca] --signing-key <key>
+ *   maintainers takeover       --track <name> --successor-key <key> --new-holder <key>
+ *   maintainers verify         [--path ./.maintainers/] [--as-of <RFC3339|now>]
+ *   maintainers status         [--path ./.maintainers/] [--as-of <RFC3339|now>]
  *
- * Yubikey-via-PIV key sources (`yubikey:slot=<n>`) are recognized but not yet
- * implemented; the protocol library currently signs Ed25519 only. See the
- * README for the staging plan around ES256 support.
+ * Key sources (`<key>`):
+ *   file:<path>          local 32-byte hex Ed25519 key (priv or pub) — the
+ *                        lower-assurance air-gapped / successor fallback.
+ *   yubikey-piv:slot=9c  YubiKey PIV-resident Ed25519 — the supported
+ *                        maintainer-root path; the private half never leaves
+ *                        the token. A PIV-Ed25519 signature over the canonical
+ *                        bytes is byte-identical RFC-8032 Ed25519, so there is
+ *                        ZERO protocol/wire/spec delta (§11.1). The native
+ *                        PC/SC transport is verified only at the YubiKey gate;
+ *                        until then it fail-closes — it NEVER silently falls
+ *                        back to a hex key.
  */
 
 import { CliError, parseArgs, type ParsedArgs } from "./lib/args.js";
@@ -25,6 +34,7 @@ import { newUuid } from "./lib/uuid.js";
 import { runGenesis } from "./commands/genesis.js";
 import { runMandate } from "./commands/mandate.js";
 import { runEndorsement } from "./commands/endorsement.js";
+import { runCaEndorsement } from "./commands/caEndorsement.js";
 import { runTakeover } from "./commands/takeover.js";
 import { runStatus, runVerify } from "./commands/verify.js";
 
@@ -60,6 +70,8 @@ export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
         return await runMandate(args, env);
       case "endorsement":
         return await runEndorsement(args, env);
+      case "ca-endorsement":
+        return await runCaEndorsement(args, env);
       case "takeover":
         return await runTakeover(args, env);
       case "verify":
@@ -104,16 +116,17 @@ function printUsage(println: (s: string) => void): void {
   println("maintainers — authority-management CLI");
   println("");
   println("commands:");
-  println("  genesis      --track NAME --duration 60d --holder-key file:KEY [--signing-key file:PRIV] [--successors file:A,file:B] [--output DIR]");
-  println("  mandate      --track NAME --duration 60d --signing-key file:PRIV [--successors file:A,file:B] [--path .maintainers]");
-  println("  endorsement  --commit 40HEX --tag SEMVER --signing-key file:PRIV [--previous-id UUID --previous-commit 40HEX] [--intermediates auto|file:X|csv] [--track release] [--path .maintainers]");
-  println("  takeover     --track NAME --successor-key file:PRIV --new-holder file:PUB [--successors file:A,file:B] [--duration 60d] [--path .maintainers]");
-  println("  verify       [--path .maintainers] [--as-of RFC3339|now]");
-  println("  status       [--path .maintainers] [--as-of RFC3339|now]");
+  println("  genesis         --track NAME --duration 60d --holder-key KEY [--signing-key KEY] [--successors A,B] [--output DIR]");
+  println("  mandate         --track NAME --duration 60d --signing-key KEY [--successors A,B] [--path .maintainers]");
+  println("  endorsement     --commit 40HEX --tag SEMVER --signing-key KEY [--previous-id UUID --previous-commit 40HEX] [--intermediates auto|file:X|csv] [--track release] [--path .maintainers]");
+  println("  ca-endorsement  --ca-pubkey 64HEX --signing-key KEY [--scope S] [--duration 7d] [--track ca] [--path .maintainers]");
+  println("  takeover        --track NAME --successor-key KEY --new-holder KEY [--successors A,B] [--duration 60d] [--path .maintainers]");
+  println("  verify          [--path .maintainers] [--as-of RFC3339|now]");
+  println("  status          [--path .maintainers] [--as-of RFC3339|now]");
   println("");
-  println("key sources:");
-  println("  file:<path>           local 32-byte hex Ed25519 key (priv or pub)");
-  println("  yubikey:slot=<piv>    Yubikey via PIV (STAGED — not yet implemented)");
+  println("key sources (KEY):");
+  println("  file:<path>           local 32-byte hex Ed25519 key (priv or pub) — air-gapped/successor fallback");
+  println("  yubikey-piv:slot=9c   YubiKey PIV-resident Ed25519 — the supported maintainer-root path");
 }
 
 // Re-exports so tests and embedders can drive the CLI without spawning a process.
@@ -121,5 +134,6 @@ export { parseArgs } from "./lib/args.js";
 export { buildGenesis } from "./commands/genesis.js";
 export { buildRenewal } from "./commands/mandate.js";
 export { buildEndorsement } from "./commands/endorsement.js";
+export { buildCaEndorsement } from "./commands/caEndorsement.js";
 export { buildTakeover } from "./commands/takeover.js";
 export { buildReport } from "./commands/verify.js";

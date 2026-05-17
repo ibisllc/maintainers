@@ -1,0 +1,273 @@
+/**
+ * `ca-endorsement` command — the weekly CA lease.
+ *
+ * We cross-check against the protocol verifier end to end: a ca-track
+ * genesis mandate → `verifyTrack` → `verifyCaEndorsements` /
+ * `authorizedCaKeys`. The CLI must emit a lease that the §9 link-3
+ * chokepoint accepts and that authorizes exactly the hot CA pubkey.
+ * The YubiKey-PIV path must be byte-identical to the hex path (§11.1).
+ */
+
+import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+  authorizedCaKeys,
+  canonicalCaEndorsement,
+  generateKeypair,
+  sign,
+  signCaEndorsement,
+  verify,
+  verifyCaEndorsements,
+  verifyTrack,
+  type ApprovalRule,
+  type TrackPolicy,
+} from "@maintainers/protocol";
+import { buildCaEndorsement } from "../src/commands/caEndorsement.js";
+import { buildGenesis } from "../src/commands/genesis.js";
+import { dispatch, type CliEnv } from "../src/index.js";
+import { parseArgs } from "../src/lib/args.js";
+import { writeMandate, writeTrackPolicyIfMissing } from "../src/lib/store.js";
+import type { PivTransport } from "../src/lib/keysource.js";
+
+function keypair(seedByte: number) {
+  const seed = new Uint8Array(32);
+  seed[0] = seedByte;
+  return generateKeypair(seed);
+}
+
+function fakeFs(files: Record<string, string>) {
+  return {
+    readFileSync(p: string): string {
+      const v = files[p];
+      if (v === undefined) throw new Error(`ENOENT: ${p}`);
+      return v;
+    },
+  };
+}
+
+const CA_RULE: ApprovalRule = {
+  kind: "threshold",
+  threshold: 1,
+  of: "anyAuthorizedSigner",
+};
+const CA_POLICY: TrackPolicy = {
+  track: "ca",
+  defaultMandateDuration: "365d",
+  approvalRule: CA_RULE,
+};
+
+const NOW = new Date("2026-05-17T12:00:00Z");
+
+/** A ca-track VerifiedTrack rooted in `maintainer` as the cold authority. */
+async function caTrackOf(maintainer: { pubKey: string; privKey: string }) {
+  const genesis = await buildGenesis({
+    track: "ca",
+    duration: "365d",
+    holderKeySource: "file:./m.pub",
+    signingKeySource: "file:./m.priv",
+    successorsSource: undefined,
+    outputDir: undefined,
+    now: () => new Date("2026-01-01T00:00:00Z"),
+    io: fakeFs({ "./m.pub": maintainer.pubKey, "./m.priv": maintainer.privKey }),
+    uuid: () => "ca-genesis-0000-0000-000000000000",
+  });
+  return verifyTrack("ca", CA_POLICY, [genesis]);
+}
+
+describe("buildCaEndorsement", () => {
+  it("emits a lease the protocol verifier accepts and that authorizes the hot CA key", async () => {
+    const maintainer = keypair(1);
+    const hotCa = keypair(9);
+    const e = await buildCaEndorsement({
+      caPubkey: hotCa.pubKey,
+      scope: "flagship/directory-attestation",
+      duration: "7d",
+      track: "ca",
+      signingKeySource: "file:./m.priv",
+      now: () => NOW,
+      io: fakeFs({ "./m.priv": maintainer.privKey }),
+      uuid: () => "ca-e1-0000-0000-0000-000000000000",
+    });
+
+    expect(e.kind).toBe("CaEndorsement");
+    expect(e.signedBy).toBe(maintainer.pubKey);
+    expect(e.caPubkey).toBe(hotCa.pubKey);
+    expect(e.notBefore).toBe("2026-05-17T12:00:00.000Z");
+    expect(e.notAfter).toBe("2026-05-24T12:00:00.000Z");
+    // Byte-identical to the in-process signCaEndorsement path.
+    const { signatures, ...unsigned } = e;
+    void signatures;
+    expect(e).toEqual(signCaEndorsement(unsigned, [{ privKey: maintainer.privKey }]));
+    expect(verify(e.signatures[0]!.sig, canonicalCaEndorsement(e), maintainer.pubKey)).toBe(true);
+
+    const caTrack = await caTrackOf(maintainer);
+    const result = verifyCaEndorsements([e], caTrack, CA_RULE, NOW);
+    expect(result.validEndorsements).toHaveLength(1);
+    expect(result.rejections).toHaveLength(0);
+    expect(result.currentCaPubkey).toBe(hotCa.pubKey);
+    expect(authorizedCaKeys([e], caTrack, CA_RULE, NOW)).toEqual([hotCa.pubKey]);
+  });
+
+  it("a lapsed lease is rejected at the verifier's clock (fail-closed)", async () => {
+    const maintainer = keypair(2);
+    const hotCa = keypair(8);
+    const e = await buildCaEndorsement({
+      caPubkey: hotCa.pubKey,
+      scope: "flagship/directory-attestation",
+      duration: "7d",
+      track: "ca",
+      signingKeySource: "file:./m.priv",
+      now: () => NOW,
+      io: fakeFs({ "./m.priv": maintainer.privKey }),
+      uuid: () => "ca-e2-0000-0000-0000-000000000000",
+    });
+    const caTrack = await caTrackOf(maintainer);
+    const later = new Date("2026-06-30T00:00:00Z"); // well past notAfter
+    expect(authorizedCaKeys([e], caTrack, CA_RULE, later)).toEqual([]);
+  });
+
+  it("YubiKey-PIV (injected token) is byte-identical to the file: path", async () => {
+    const maintainer = keypair(3);
+    const hotCa = keypair(7);
+    const token: PivTransport = {
+      async getPublicKey() {
+        return maintainer.pubKey;
+      },
+      async signEd25519(_slot, _pin, message) {
+        return sign(message, maintainer.privKey);
+      },
+      async generateEd25519() {
+        return maintainer.pubKey;
+      },
+    };
+    const common = {
+      caPubkey: hotCa.pubKey,
+      scope: "flagship/directory-attestation",
+      duration: "7d",
+      track: "ca",
+      now: () => NOW,
+      uuid: () => "ca-e3-0000-0000-0000-000000000000",
+    };
+    const viaFile = await buildCaEndorsement({
+      ...common,
+      signingKeySource: "file:./m.priv",
+      io: fakeFs({ "./m.priv": maintainer.privKey }),
+    });
+    const viaPiv = await buildCaEndorsement({
+      ...common,
+      signingKeySource: "yubikey-piv:slot=9c",
+      io: fakeFs({}),
+      pivTransport: token,
+      pivPin: async () => "424242",
+    });
+    expect(viaPiv).toEqual(viaFile);
+  });
+
+  it("rejects a malformed --ca-pubkey", async () => {
+    const maintainer = keypair(4);
+    await expect(
+      buildCaEndorsement({
+        caPubkey: "not-hex",
+        scope: "s",
+        duration: "7d",
+        track: "ca",
+        signingKeySource: "file:./m.priv",
+        now: () => NOW,
+        io: fakeFs({ "./m.priv": maintainer.privKey }),
+        uuid: () => "x",
+      }),
+    ).rejects.toThrow(/--ca-pubkey must be exactly 64 hex/);
+  });
+});
+
+describe("ca-endorsement dispatch (e2e)", () => {
+  function mkEnv(lines: string[]): CliEnv {
+    return {
+      now: () => NOW,
+      io: { readFileSync: (p: string) => fs.readFileSync(p, "utf8") },
+      uuid: () => "ca-disp-0000-0000-0000-000000000000",
+      println: (l) => lines.push(l),
+      printerr: (l) => lines.push(`ERR ${l}`),
+    };
+  }
+
+  it("writes a CaEndorsement under .maintainers/ca-endorsements and exits 0", async () => {
+    const maintainer = keypair(5);
+    const hotCa = keypair(6);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "maintainers-ca-disp-"));
+    const root = path.join(tmp, ".maintainers");
+    const keyFile = path.join(tmp, "m.priv");
+    const pubFile = path.join(tmp, "m.pub");
+    fs.writeFileSync(keyFile, maintainer.privKey);
+    fs.writeFileSync(pubFile, maintainer.pubKey);
+    // A real ca-track genesis on disk so the signer IS the authority
+    // (the advisory must NOT fire).
+    writeTrackPolicyIfMissing(root, CA_POLICY);
+    const genesis = await buildGenesis({
+      track: "ca",
+      duration: "365d",
+      holderKeySource: `file:${pubFile}`,
+      signingKeySource: `file:${keyFile}`,
+      successorsSource: undefined,
+      outputDir: undefined,
+      now: () => new Date("2026-01-01T00:00:00Z"),
+      io: { readFileSync: (p: string) => fs.readFileSync(p, "utf8") },
+      uuid: () => "ca-g-0000-0000-0000-000000000000",
+    });
+    writeMandate(root, genesis);
+
+    const lines: string[] = [];
+    const code = await dispatch(
+      parseArgs([
+        "ca-endorsement",
+        "--ca-pubkey",
+        hotCa.pubKey,
+        "--signing-key",
+        `file:${keyFile}`,
+        "--path",
+        root,
+      ]),
+      mkEnv(lines),
+    );
+    expect(code).toBe(0);
+    const dir = path.join(root, "ca-endorsements");
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const e = JSON.parse(fs.readFileSync(path.join(dir, files[0]!), "utf8"));
+    expect(e.kind).toBe("CaEndorsement");
+    expect(e.caPubkey).toBe(hotCa.pubKey);
+    expect(e.signedBy).toBe(maintainer.pubKey);
+    expect(lines.join("\n")).toContain("wrote CA lease");
+    expect(lines.join("\n")).not.toMatch(/^note:/m);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("emits an advisory when no ca-track mandate exists on disk", async () => {
+    const maintainer = keypair(11);
+    const hotCa = keypair(12);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "maintainers-ca-noauth-"));
+    const root = path.join(tmp, ".maintainers");
+    const keyFile = path.join(tmp, "m.priv");
+    fs.writeFileSync(keyFile, maintainer.privKey);
+
+    const lines: string[] = [];
+    const code = await dispatch(
+      parseArgs([
+        "ca-endorsement",
+        "--ca-pubkey",
+        hotCa.pubKey,
+        "--signing-key",
+        `file:${keyFile}`,
+        "--path",
+        root,
+      ]),
+      mkEnv(lines),
+    );
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toMatch(/note: no "ca"-track mandates found/);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
