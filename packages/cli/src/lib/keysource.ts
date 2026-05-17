@@ -3,12 +3,19 @@
  *
  * Two forms supported on the CLI surface:
  *   file:<path>            local hex-encoded key (pubkey or privkey)
- *   yubikey:slot=<piv>     Yubikey via PIV — STAGED, not yet implemented
+ *   yubikey-piv:slot=9c    YubiKey PIV-resident Ed25519 (the maintainer
+ *                          root path — key never leaves the token)
  *
- * The CLI's role is server-side / CI signing where an Ed25519 key on disk
- * is the normal carrier. Yubikey via PIV (and ES256) is a future addition
- * that requires the protocol library to accept ES256 signatures alongside
- * Ed25519. For now we raise a clear error and direct users to `file:` keys.
+ * `loadPubKey`/`loadPrivKey` are the legacy hex-only entry points and
+ * still reject `yubikey:` by design (a privkey can never be extracted
+ * from a token). The signer-aware entry points are `loadSigner` /
+ * `loadSignerPubKey` (below): they resolve EITHER form into an
+ * `Ed25519Signer` / public key, so one signature path serves both.
+ *
+ * A PIV-Ed25519 signature over the canonical bytes is byte-identical
+ * to RFC-8032 `ed25519.sign` — NO protocol/spec change is needed
+ * (the §11.1 linchpin; the old "needs ES256" note was wrong). The
+ * `file:` path is the lower-assurance air-gapped/successor fallback.
  *
  * File contents:
  *   - Whitespace and a leading "0x" are tolerated.
@@ -20,7 +27,11 @@
  */
 
 import * as fs from "node:fs";
-import { pubKeyFromPriv } from "@maintainers/protocol";
+import {
+  pubKeyFromPriv,
+  privKeySigner,
+  type Ed25519Signer,
+} from "@maintainers/protocol";
 import { CliError } from "./args.js";
 
 export interface LoadedPubKey {
@@ -144,4 +155,186 @@ export function loadPubKeyList(csv: string, io: KeySourceFs = realFs): LoadedPub
   if (csv.length === 0) return [];
   const parts = csv.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
   return parts.map((p) => loadPubKey(p, io));
+}
+
+// ---- YubiKey-PIV signer seam (#28) --------------------------------------
+//
+// The maintainer root key is the root of the whole CA chain (§10.1). A
+// `file:` hex key is the lower-assurance air-gapped/successor fallback;
+// the supported path is a YubiKey 5 (fw >= 5.7) PIV-resident Ed25519 key
+// — the private half NEVER leaves the token. A PIV-Ed25519 signature over
+// the canonical bytes is byte-identical to the in-process path and
+// verifies unchanged (the §11.1 linchpin: NO protocol/wire/spec delta).
+//
+// The actual PC/SC + APDU round-trip is a native concern that can only
+// be verified with a real token, so it is injected behind `PivTransport`.
+// Unit tests use a fake; the default real transport fail-closes with a
+// precise message until the native implementation is wired (the
+// human-gate increment) — it NEVER silently falls back to a hex key.
+
+/** PIV slot used for the maintainer Ed25519 key. 9c = "digital
+ *  signature" (PIN gating on every signature) — §11.4 default. */
+export const DEFAULT_PIV_SLOT = "9c";
+
+export interface PivKeyPolicy {
+  /** "always" => every signature needs a physical tap (§11.1). */
+  touch: "always" | "cached" | "never";
+  /** "once" => PIN once per session; "always" => PIN per signature. */
+  pin: "once" | "always";
+}
+
+export const GENESIS_PIV_POLICY: PivKeyPolicy = { touch: "always", pin: "once" };
+
+/**
+ * The narrow contract the CLI needs from a YubiKey PIV applet. All
+ * methods are async (PC/SC/NFC round-trips). Injected so the
+ * signature-collection path is fully unit-testable without hardware.
+ */
+export interface PivTransport {
+  /** Read the Ed25519 public key resident in `slot` (no PIN — public
+   *  read). 64-hex. Used to bind a signer and to read a successor's
+   *  backup-key pubkey during genesis. */
+  getPublicKey(slot: string): Promise<string>;
+  /** PIV GENERAL AUTHENTICATE: Ed25519 over `message` after VERIFY
+   *  PIN; the touch policy is satisfied by the physical tap. 128-hex
+   *  signature, byte-identical to RFC-8032 `ed25519.sign`. */
+  signEd25519(slot: string, pin: string, message: Uint8Array): Promise<string>;
+  /** PIV GENERATE: create a fresh Ed25519 key in `slot` ON the token
+   *  (genesis — the cold maintainer key, never leaves the token).
+   *  Returns the new 64-hex public key. */
+  generateEd25519(slot: string, policy: PivKeyPolicy): Promise<string>;
+}
+
+/** Secure PIN provider — injected by the command so the PIN is read
+ *  from a no-echo prompt, never argv/env-by-default, never logged. */
+export type PivPinProvider = () => Promise<string>;
+
+/**
+ * The default real transport. Until the native PC/SC implementation is
+ * wired + verified against a real YubiKey (the Phase-1 human gate), this
+ * fail-closes with a precise, human-readable reason. It MUST NOT fall
+ * back to any in-process key.
+ */
+export const realPivTransport: PivTransport = {
+  async getPublicKey() {
+    throw new CliError(unwiredMsg("read a PIV public key"));
+  },
+  async signEd25519() {
+    throw new CliError(unwiredMsg("sign with a PIV key"));
+  },
+  async generateEd25519() {
+    throw new CliError(unwiredMsg("generate a PIV key"));
+  },
+};
+
+function unwiredMsg(action: string): string {
+  return (
+    `cannot ${action}: the native PIV/PC/SC transport is not wired in ` +
+    `this build. Use a build with the hardware transport (the genesis ` +
+    `ceremony build), or fall back to a "file:" hex key (lower assurance, ` +
+    `air-gapped/successor only — see docs/ca-operations.md).`
+  );
+}
+
+export interface SignerOptions {
+  io?: KeySourceFs;
+  /** PIV transport for `yubikey-piv:` sources (default: realPivTransport). */
+  pivTransport?: PivTransport;
+  /** PIN provider for `yubikey-piv:` sources. Required for PIV. */
+  pivPin?: PivPinProvider;
+}
+
+/** Parse `yubikey-piv:slot=9c` / `yubikey:slot=9c` → slot. */
+function parsePivSource(source: string): { slot: string } {
+  const rest = source.startsWith("yubikey-piv:")
+    ? source.slice("yubikey-piv:".length)
+    : source.slice("yubikey:".length);
+  let slot = DEFAULT_PIV_SLOT;
+  for (const kv of rest.split(",")) {
+    const t = kv.trim();
+    if (t.length === 0) continue;
+    const eq = t.indexOf("=");
+    const k = eq === -1 ? t : t.slice(0, eq);
+    const v = eq === -1 ? "" : t.slice(eq + 1);
+    if (k === "slot") {
+      if (!/^[0-9a-fA-F]{2}$/.test(v)) {
+        throw new CliError(
+          `yubikey-piv: slot must be a 2-hex PIV slot id (e.g. slot=9c); got "${v}"`,
+        );
+      }
+      slot = v.toLowerCase();
+    } else {
+      throw new CliError(`yubikey-piv: unknown option "${k}" in "${source}"`);
+    }
+  }
+  return { slot };
+}
+
+function isPivSource(source: string): boolean {
+  return source.startsWith("yubikey-piv:") || source.startsWith("yubikey:");
+}
+
+/**
+ * Resolve a signing source into an {@link Ed25519Signer}. The single
+ * entry point both the local-hex and YubiKey-PIV paths funnel through —
+ * one signature-collection path (with `signMandateWith` et al.).
+ *
+ *   file:<path>            local hex key  -> privKeySigner (fallback)
+ *   yubikey-piv:slot=9c    PIV-resident   -> token-backed signer
+ */
+export async function loadSigner(
+  source: string,
+  opts: SignerOptions = {},
+): Promise<Ed25519Signer> {
+  if (isPivSource(source)) {
+    const { slot } = parsePivSource(source);
+    const transport = opts.pivTransport ?? realPivTransport;
+    const pin = opts.pivPin;
+    if (!pin) {
+      throw new CliError(
+        "yubikey-piv: a PIN provider is required (the command must prompt; " +
+          "the PIN is never read from argv and never logged)",
+      );
+    }
+    const pubKey = await transport.getPublicKey(slot);
+    if (!isHex64(normalizeHex(pubKey))) {
+      throw new CliError(
+        `yubikey-piv: token returned a malformed public key for slot ${slot}`,
+      );
+    }
+    return {
+      pubKey: normalizeHex(pubKey),
+      async sign(message: Uint8Array): Promise<string> {
+        // PIN obtained per call from the secure provider; the provider
+        // is responsible for caching when policy is pin=once.
+        return transport.signEd25519(slot, await pin(), message);
+      },
+    };
+  }
+  // file: (or anything else loadPrivKey accepts) — wrap the hex key.
+  const loaded = loadPrivKey(source, opts.io ?? realFs);
+  return privKeySigner(loaded.privKey);
+}
+
+/**
+ * Read a *public* key from a signing-style source without needing the
+ * private half — `file:` pubkey/privkey or a `yubikey-piv:` public read
+ * (no PIN). Used by genesis to read the named successor/backup key.
+ */
+export async function loadSignerPubKey(
+  source: string,
+  opts: SignerOptions = {},
+): Promise<string> {
+  if (isPivSource(source)) {
+    const { slot } = parsePivSource(source);
+    const transport = opts.pivTransport ?? realPivTransport;
+    const pub = normalizeHex(await transport.getPublicKey(slot));
+    if (!isHex64(pub)) {
+      throw new CliError(
+        `yubikey-piv: token returned a malformed public key for slot ${slot}`,
+      );
+    }
+    return pub;
+  }
+  return loadPubKey(source, opts.io ?? realFs).pubKey;
 }
