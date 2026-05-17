@@ -13,13 +13,19 @@
 
 import {
   intermediateMerkleRoot,
-  signReleaseEndorsement,
+  signReleaseEndorsementWith,
   type ReleaseEndorsement,
 } from "@maintainers/protocol";
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { CliError, type ParsedArgs, requireFlag, optionalFlag } from "../lib/args.js";
-import { loadPrivKey, type KeySourceFs } from "../lib/keysource.js";
+import {
+  loadSigner,
+  type KeySourceFs,
+  type PivTransport,
+  type PivPinProvider,
+  type SignerOptions,
+} from "../lib/keysource.js";
 import { readStore, writeEndorsement } from "../lib/store.js";
 import { newUuid } from "../lib/uuid.js";
 
@@ -37,9 +43,13 @@ export interface EndorsementOptions {
   uuid: () => string;
   gitDir?: string;
   gitRunner?: (args: string[]) => string;
+  pivTransport?: PivTransport;
+  pivPin?: PivPinProvider;
 }
 
-export function buildEndorsement(opts: EndorsementOptions): ReleaseEndorsement {
+export async function buildEndorsement(
+  opts: EndorsementOptions,
+): Promise<ReleaseEndorsement> {
   const store = readStore(opts.rootDir);
   const trackMandates = store.mandatesByTrack.get(opts.track) ?? [];
   if (trackMandates.length === 0) {
@@ -47,7 +57,12 @@ export function buildEndorsement(opts: EndorsementOptions): ReleaseEndorsement {
       `no mandates found on track "${opts.track}"; bootstrap with "genesis" first`,
     );
   }
-  const signer = loadPrivKey(opts.signingKeySource, opts.io);
+  const sopts: SignerOptions = {
+    io: opts.io,
+    pivTransport: opts.pivTransport,
+    pivPin: opts.pivPin,
+  };
+  const signer = await loadSigner(opts.signingKeySource, sopts);
 
   const commit = expectCommitHash(opts.commit, "commit");
   const previousCommit = opts.previousCommit
@@ -64,7 +79,7 @@ export function buildEndorsement(opts: EndorsementOptions): ReleaseEndorsement {
   const merkle = intermediateMerkleRoot(intermediates);
 
   const issuedAt = opts.now().toISOString();
-  return signReleaseEndorsement(
+  return signReleaseEndorsementWith(
     {
       kind: "ReleaseEndorsement",
       version: 1,
@@ -79,7 +94,7 @@ export function buildEndorsement(opts: EndorsementOptions): ReleaseEndorsement {
       issuedAt,
       signedBy: signer.pubKey,
     },
-    [{ privKey: signer.privKey }],
+    [signer],
   );
 }
 
@@ -88,9 +103,14 @@ export interface EndorsementCmdEnv {
   io: KeySourceFs;
   uuid: () => string;
   println: (line: string) => void;
+  pivTransport?: PivTransport;
+  pivPin?: PivPinProvider;
 }
 
-export function runEndorsement(args: ParsedArgs, env: EndorsementCmdEnv): number {
+export async function runEndorsement(
+  args: ParsedArgs,
+  env: EndorsementCmdEnv,
+): Promise<number> {
   const commit = requireFlag(args, "commit");
   const tag = requireFlag(args, "tag");
   const previousId = optionalFlag(args, "previous-id") ?? null;
@@ -106,7 +126,7 @@ export function runEndorsement(args: ParsedArgs, env: EndorsementCmdEnv): number
     );
   }
 
-  const e = buildEndorsement({
+  const e = await buildEndorsement({
     commit,
     tag,
     previousId,
@@ -118,6 +138,8 @@ export function runEndorsement(args: ParsedArgs, env: EndorsementCmdEnv): number
     now: env.now,
     io: env.io,
     uuid: env.uuid,
+    pivTransport: env.pivTransport,
+    pivPin: env.pivPin,
   });
   const written = writeEndorsement(rootDir, e);
   env.println(`wrote endorsement for ${tag} (commit ${commit.slice(0, 12)}…) → ${written.relative}`);

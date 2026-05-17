@@ -403,7 +403,7 @@ describe("buildEndorsement", () => {
     writeMandate(tmp, genesis);
 
     const commit = "a".repeat(40);
-    const e = buildEndorsement({
+    const e = await buildEndorsement({
       commit,
       tag: "v0.1.0",
       previousId: null,
@@ -450,7 +450,7 @@ describe("buildEndorsement", () => {
     const c1 = "1".repeat(40);
     const c2 = "2".repeat(40);
     const c3 = "3".repeat(40);
-    const e = buildEndorsement({
+    const e = await buildEndorsement({
       commit: c3,
       tag: "v0.2.0",
       previousId: "e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1",
@@ -487,7 +487,7 @@ describe("buildEndorsement", () => {
     });
     writeMandate(tmp, genesis);
 
-    expect(() =>
+    await expect(
       buildEndorsement({
         commit: "zzz",
         tag: "v0.0.1",
@@ -501,7 +501,7 @@ describe("buildEndorsement", () => {
         io: fakeFs({ "./alice.priv": alice.privKey }),
         uuid: () => "e",
       }),
-    ).toThrow(/commit must be a 40-character commit hash/);
+    ).rejects.toThrow(/commit must be a 40-character commit hash/);
   });
 });
 
