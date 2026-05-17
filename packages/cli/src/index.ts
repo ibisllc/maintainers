@@ -34,6 +34,7 @@ import {
   type PivTransport,
   type PivPinProvider,
 } from "./lib/keysource.js";
+import { ttyConfirm, type ConfirmFn } from "./lib/ceremony.js";
 import { newUuid } from "./lib/uuid.js";
 import { runGenesis } from "./commands/genesis.js";
 import { runMandate } from "./commands/mandate.js";
@@ -55,6 +56,10 @@ export interface CliEnv {
   /** Secure no-echo PIN provider for `yubikey-piv:` sources. The PIN is
    *  never read from argv/env-by-default and never logged. */
   pivPin?: PivPinProvider;
+  /** Typed-confirm provider for the four maintainer-key ceremonies.
+   *  Default: {@link ttyConfirm} (real TTY; fail-closed when piped).
+   *  `--yes` skips the prompt; tests inject a fake. */
+  confirm?: ConfirmFn;
 }
 
 export const defaultEnv: CliEnv = {
@@ -63,6 +68,7 @@ export const defaultEnv: CliEnv = {
   uuid: newUuid,
   println: (line: string) => process.stdout.write(line + "\n"),
   printerr: (line: string) => process.stderr.write(line + "\n"),
+  confirm: ttyConfirm,
 };
 
 export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
@@ -144,4 +150,13 @@ export { buildEndorsement } from "./commands/endorsement.js";
 export { buildCaEndorsement, assembleCaEndorsement } from "./commands/caEndorsement.js";
 export { buildTakeover, assembleTakeover } from "./commands/takeover.js";
 export { buildReport } from "./commands/verify.js";
-export { renderDryRun, signAssembled, type Assembled } from "./lib/ceremony.js";
+export {
+  renderPreview,
+  previewConfirmSign,
+  ceremonyBanner,
+  confirmPhrase,
+  confirmGate,
+  signAssembled,
+  type Assembled,
+  type ConfirmFn,
+} from "./lib/ceremony.js";

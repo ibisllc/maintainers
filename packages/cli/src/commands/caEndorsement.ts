@@ -48,7 +48,8 @@ import {
 } from "../lib/keysource.js";
 import {
   type Assembled,
-  renderDryRun,
+  type ConfirmFn,
+  previewConfirmSign,
   signAssembled,
 } from "../lib/ceremony.js";
 import { readStore, writeCaEndorsement, caEndorsementFilename } from "../lib/store.js";
@@ -160,6 +161,7 @@ export interface CaEndorsementCmdEnv {
   println: (line: string) => void;
   pivTransport?: PivTransport;
   pivPin?: PivPinProvider;
+  confirm?: ConfirmFn;
 }
 
 /**
@@ -188,6 +190,7 @@ export async function runCaEndorsement(
   const signingKey = requireFlag(args, "signing-key");
   const rootDir = optionalFlag(args, "path") ?? ".maintainers";
   const dryRun = boolFlag(args, "dry-run");
+  const yes = boolFlag(args, "yes");
 
   const a = await assembleCaEndorsement({
     caPubkey,
@@ -221,17 +224,18 @@ export async function runCaEndorsement(
     );
   }
 
-  if (dryRun) {
-    renderDryRun(a, env.println);
-    return 0;
-  }
-
-  const sopts: SignerOptions = {
-    io: env.io,
-    pivTransport: env.pivTransport,
-    pivPin: env.pivPin,
-  };
-  const e = await signAssembled(a, signCaEndorsementWith, sopts);
+  const e = await previewConfirmSign(a, signCaEndorsementWith, {
+    dryRun,
+    yes,
+    env: {
+      println: env.println,
+      io: env.io,
+      pivTransport: env.pivTransport,
+      pivPin: env.pivPin,
+      confirm: env.confirm,
+    },
+  });
+  if (!e) return 0; // dry-run
 
   const written = writeCaEndorsement(a.rootDir, e);
   env.println(`wrote CA lease for track "${track}" → ${written.relative}`);

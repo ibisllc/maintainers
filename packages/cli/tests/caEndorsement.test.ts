@@ -228,6 +228,7 @@ describe("ca-endorsement dispatch (e2e)", () => {
         `file:${keyFile}`,
         "--path",
         root,
+        "--yes",
       ]),
       mkEnv(lines),
     );
@@ -240,7 +241,10 @@ describe("ca-endorsement dispatch (e2e)", () => {
     expect(e.caPubkey).toBe(hotCa.pubKey);
     expect(e.signedBy).toBe(maintainer.pubKey);
     expect(lines.join("\n")).toContain("wrote CA lease");
-    expect(lines.join("\n")).not.toMatch(/^note:/m);
+    // The on-disk-authority ADVISORY must not fire (genesis is present +
+    // the signer is the authority). Scoped to the advisory's wording so
+    // it doesn't collide with the always-on preview's "note:" line.
+    expect(lines.join("\n")).not.toMatch(/^note: (no |signer )/m);
 
     fs.rmSync(tmp, { recursive: true, force: true });
   });
@@ -263,6 +267,7 @@ describe("ca-endorsement dispatch (e2e)", () => {
         `file:${keyFile}`,
         "--path",
         root,
+        "--yes",
       ]),
       mkEnv(lines),
     );

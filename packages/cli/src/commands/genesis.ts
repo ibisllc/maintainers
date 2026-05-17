@@ -39,7 +39,8 @@ import {
 } from "../lib/keysource.js";
 import {
   type Assembled,
-  renderDryRun,
+  type ConfirmFn,
+  previewConfirmSign,
   signAssembled,
 } from "../lib/ceremony.js";
 import { newUuid } from "../lib/uuid.js";
@@ -135,6 +136,7 @@ export async function runGenesis(args: ParsedArgs, env: GenesisCmdEnv): Promise<
   const successorsCsv = optionalFlag(args, "successors");
   const output = optionalFlag(args, "output");
   const dryRun = boolFlag(args, "dry-run");
+  const yes = boolFlag(args, "yes");
 
   const a = await assembleGenesis({
     track,
@@ -150,17 +152,18 @@ export async function runGenesis(args: ParsedArgs, env: GenesisCmdEnv): Promise<
     pivPin: env.pivPin,
   });
 
-  if (dryRun) {
-    renderDryRun(a, env.println);
-    return 0;
-  }
-
-  const sopts: SignerOptions = {
-    io: env.io,
-    pivTransport: env.pivTransport,
-    pivPin: env.pivPin,
-  };
-  const mandate = await signAssembled(a, signMandateWith, sopts);
+  const mandate = await previewConfirmSign(a, signMandateWith, {
+    dryRun,
+    yes,
+    env: {
+      println: env.println,
+      io: env.io,
+      pivTransport: env.pivTransport,
+      pivPin: env.pivPin,
+      confirm: env.confirm,
+    },
+  });
+  if (!mandate) return 0; // dry-run
 
   writeTrackPolicyIfMissing(a.rootDir, {
     track,
@@ -173,6 +176,16 @@ export async function runGenesis(args: ParsedArgs, env: GenesisCmdEnv): Promise<
   env.println(`  issuedAt:  ${mandate.issuedAt}`);
   env.println(`  expiresAt: ${mandate.expiresAt}`);
   env.println(`  mandateId: ${mandate.mandateId}`);
+  env.println(`  successors: ${mandate.successors.join(", ")}`);
+  env.println(
+    "RECORD the holder pubkey above — bake it into @flagship/protocol " +
+      "MAINTAINER_GENESIS_PUBKEYS (re-bake per surface: protocol-const, " +
+      "webapp via it, iOS, Android).",
+  );
+  env.println(
+    "Your named successor key is the ONLY recovery if this primary is " +
+      "lost/bricked — store it safely and offline (no key escrow exists).",
+  );
   return 0;
 }
 
@@ -183,6 +196,7 @@ export interface GenesisCmdEnv {
   println: (line: string) => void;
   pivTransport?: PivTransport;
   pivPin?: PivPinProvider;
+  confirm?: ConfirmFn;
 }
 
 /**

@@ -36,7 +36,8 @@ import {
 } from "../lib/keysource.js";
 import {
   type Assembled,
-  renderDryRun,
+  type ConfirmFn,
+  previewConfirmSign,
   signAssembled,
 } from "../lib/ceremony.js";
 import { readStore, writeMandate, mandateFilename } from "../lib/store.js";
@@ -134,6 +135,7 @@ export interface TakeoverCmdEnv {
   println: (line: string) => void;
   pivTransport?: PivTransport;
   pivPin?: PivPinProvider;
+  confirm?: ConfirmFn;
 }
 
 export async function runTakeover(args: ParsedArgs, env: TakeoverCmdEnv): Promise<number> {
@@ -144,6 +146,7 @@ export async function runTakeover(args: ParsedArgs, env: TakeoverCmdEnv): Promis
   const successorsCsv = optionalFlag(args, "successors");
   const rootDir = optionalFlag(args, "path") ?? ".maintainers";
   const dryRun = boolFlag(args, "dry-run");
+  const yes = boolFlag(args, "yes");
 
   const a = await assembleTakeover({
     track,
@@ -159,17 +162,18 @@ export async function runTakeover(args: ParsedArgs, env: TakeoverCmdEnv): Promis
     pivPin: env.pivPin,
   });
 
-  if (dryRun) {
-    renderDryRun(a, env.println);
-    return 0;
-  }
-
-  const sopts: SignerOptions = {
-    io: env.io,
-    pivTransport: env.pivTransport,
-    pivPin: env.pivPin,
-  };
-  const m = await signAssembled(a, signMandateWith, sopts);
+  const m = await previewConfirmSign(a, signMandateWith, {
+    dryRun,
+    yes,
+    env: {
+      println: env.println,
+      io: env.io,
+      pivTransport: env.pivTransport,
+      pivPin: env.pivPin,
+      confirm: env.confirm,
+    },
+  });
+  if (!m) return 0; // dry-run
   const written = writeMandate(a.rootDir, m);
   env.println(`wrote takeover mandate for track "${track}" → ${written.relative}`);
   env.println(`  new holder: ${m.holder}`);

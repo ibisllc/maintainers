@@ -87,6 +87,7 @@ describe("end-to-end CLI dispatch", () => {
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
       "--successors", `file:${fx.keys["bob.pub"]}`,
       "--output", fx.cliRoot,
+      "--yes",
     ]), env1);
     expect(code1).toBe(0);
     expect(fs.existsSync(path.join(fx.cliRoot, "tracks/release/policy.json"))).toBe(true);
@@ -98,6 +99,7 @@ describe("end-to-end CLI dispatch", () => {
       "--duration", "60d",
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
       "--path", fx.cliRoot,
+      "--yes",
     ]), env2);
     expect(code2).toBe(0);
 
@@ -124,6 +126,7 @@ describe("end-to-end CLI dispatch", () => {
       "--holder-key", `file:${fx.keys["alice.pub"]}`,
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
       "--output", fx.cliRoot,
+      "--yes",
     ]), env1);
     fs.unlinkSync(path.join(fx.cliRoot, "tracks/release/policy.json"));
 
@@ -150,6 +153,7 @@ describe("end-to-end CLI dispatch", () => {
       "--holder-key", `file:${fx.keys["alice.pub"]}`,
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
       "--output", fx.cliRoot,
+      "--yes",
     ]), env1);
     fs.unlinkSync(path.join(fx.cliRoot, "tracks/release/policy.json"));
 
