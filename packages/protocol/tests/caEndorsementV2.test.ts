@@ -12,8 +12,8 @@ import { verifyMandateChainFromPin } from "../src/verifierV2.js";
 import {
   verifyCaEndorsementsV2,
   authorizedCaKeysV2,
+  DEFAULT_CLOCK_SKEW_MS,
 } from "../src/caEndorsementV2.js";
-import { DEFAULT_CLOCK_SKEW_MS } from "../src/caEndorsement.js";
 import type { CaEndorsement, MandateV2 } from "../src/types.js";
 
 function kp(seedByte: number): { privKey: string; pubKey: string } {

@@ -13,7 +13,6 @@
 
 import { sha256Hex } from "./crypto.js";
 import type {
-  Mandate,
   MandateV2,
   KeyFile,
   KeyRedirect,
@@ -78,31 +77,6 @@ function joinTagged(kind: string, parts: string[]): Uint8Array {
     }
   }
   return new TextEncoder().encode(all.join(SEP));
-}
-
-/**
- * Mandate canonical bytes.
- * Order: mandateId | track | holder | issuedAt | expiresAt | successors-joined-by-comma | signedBy
- *
- * Successors are joined by `,` (we forbid `,` in pubkeys via hex validation).
- */
-export function canonicalMandate(m: Omit<Mandate, "signatures">): Uint8Array {
-  validateField("mandateId", m.mandateId);
-  validateField("track", m.track);
-  validateHex("holder", m.holder, 64);
-  validateField("issuedAt", m.issuedAt);
-  validateField("expiresAt", m.expiresAt);
-  for (const s of m.successors) validateHex("successor", s, 64);
-  validateHex("signedBy", m.signedBy, 64);
-  return joinTagged("mandate", [
-    m.mandateId,
-    m.track,
-    m.holder,
-    m.issuedAt,
-    m.expiresAt,
-    m.successors.join(","),
-    m.signedBy,
-  ]);
 }
 
 /**

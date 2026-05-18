@@ -26,12 +26,42 @@
 import { canonicalCaEndorsement } from "./canonical.js";
 import { verify } from "./crypto.js";
 import { currentAuthorityV2, type VerifiedChainV2 } from "./verifierV2.js";
-import {
-  DEFAULT_CLOCK_SKEW_MS,
-  type CaEndorsementFailReason,
-  type VerifiedCaEndorsements,
-} from "./caEndorsement.js";
 import type { CaEndorsement, Pubkey } from "./types.js";
+
+/**
+ * Why a CaEndorsement was rejected. Re-homed here from the removed v1
+ * caEndorsement.ts (c4.5e); the lease semantics + result shape are
+ * unchanged so consumers keep the identical downstream types. This
+ * module is now their canonical home.
+ */
+export type CaEndorsementFailReason =
+  | "wrong-envelope"
+  | "lease-window-malformed"
+  | "lease-not-yet"
+  | "lease-expired"
+  | "signature-invalid"
+  | "no-ca-authority-at-now"
+  | "signer-not-authorized"
+  | "approval-rule-unsatisfied";
+
+export interface VerifiedCaEndorsements {
+  endorsements: CaEndorsement[];
+  validEndorsements: CaEndorsement[];
+  rejections: {
+    endorsement: CaEndorsement;
+    reason: CaEndorsementFailReason;
+    detail?: string;
+  }[];
+  /**
+   * The single operational key authorized *now*: the caPubkey of the
+   * most recently issued still-in-window valid endorsement (§5.1 step
+   * 4). `null` ⇒ no live lease ⇒ fail closed.
+   */
+  currentCaPubkey: Pubkey | null;
+}
+
+/** ±5 min window-edge tolerance — spec §7 default; override for tests. */
+export const DEFAULT_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 type OneResult =
   | { ok: true }

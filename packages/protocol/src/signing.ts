@@ -10,7 +10,6 @@
  */
 
 import {
-  canonicalMandate,
   canonicalMandateV2,
   canonicalKeyFile,
   canonicalKeyRedirect,
@@ -21,7 +20,6 @@ import {
 } from "./canonical.js";
 import { sign, pubKeyFromPriv } from "./crypto.js";
 import type {
-  Mandate,
   MandateV2,
   KeyFile,
   KeyRedirect,
@@ -30,18 +28,6 @@ import type {
   ReleaseEndorsement,
   CaEndorsement,
 } from "./types.js";
-
-export function signMandate(
-  unsigned: Omit<Mandate, "signatures">,
-  signers: { privKey: string }[],
-): Mandate {
-  const bytes = canonicalMandate(unsigned);
-  const signatures = signers.map(({ privKey }) => ({
-    pubkey: pubKeyFromPriv(privKey),
-    sig: sign(bytes, privKey),
-  }));
-  return { ...unsigned, signatures };
-}
 
 /**
  * Sign a v2 mandate (LOCKED Phase-2 v2). One or more signers; the
@@ -189,15 +175,6 @@ async function collectSignatures(
     out.push({ pubkey: s.pubKey, sig: await s.sign(bytes) });
   }
   return out;
-}
-
-/** {@link signMandate} with external (e.g. YubiKey-PIV) signers. */
-export async function signMandateWith(
-  unsigned: Omit<Mandate, "signatures">,
-  signers: Ed25519Signer[],
-): Promise<Mandate> {
-  const bytes = canonicalMandate(unsigned);
-  return { ...unsigned, signatures: await collectSignatures(bytes, signers) };
 }
 
 /** {@link signMandateV2} with external (e.g. YubiKey-PIV) signers. */

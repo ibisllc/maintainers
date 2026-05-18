@@ -17,41 +17,6 @@ export interface SignatureEntry {
   sig: Signature;
 }
 
-/** Approval rule controlling who must sign for a mandate or endorsement to be valid. */
-export type ApprovalRule =
-  | { kind: "threshold"; threshold: number; of: "anyAuthorizedSigner" }
-  | { kind: "threshold"; threshold: number; of: Pubkey[] };
-
-export interface TrackPolicy {
-  track: string;
-  description?: string;
-  defaultMandateDuration: string;
-  approvalRule: ApprovalRule;
-}
-
-export interface RootPolicy {
-  schemaVersion: 1;
-  project: {
-    name: string;
-    homepage?: string;
-    contact?: string;
-  };
-  tracks: string[];
-}
-
-export interface Mandate {
-  kind: "Mandate";
-  version: 1;
-  mandateId: Uuid;
-  track: string;
-  holder: Pubkey;
-  issuedAt: Iso8601;
-  expiresAt: Iso8601;
-  successors: Pubkey[];
-  signedBy: Pubkey;
-  signatures: SignatureEntry[];
-}
-
 export interface EmailHistoryEntry {
   email: string;
   from: Iso8601;
@@ -218,15 +183,14 @@ export interface MandateV2 {
   signatures: SignatureEntry[];
 }
 
-// NOTE: MandateV2 is deliberately NOT in `Envelope`. `Envelope` is the
-// v1 generic-storage-adapter union (kind-discriminated switches in the
-// worker/web-ui adapters); v2 is pin-anchored and self-contained
-// (canonicalMandateV2 / signMandateV2 / verifyMandateChainFromPin). The
-// store/adapter rework that carries v2 lands with the static-layout
-// redesign — keeping it out here keeps the v2 protocol core additive
-// and non-breaking.
+// `Envelope` is the generic storage-adapter union (the §6 StorageAdapter
+// passes the parsed envelope alongside the raw bytes so an adapter can
+// enforce per-envelope policy). It is NOT the trust path — that is
+// pin-anchored and self-contained (canonicalMandateV2 / signMandateV2 /
+// verifyMandateChainFromPin). With v1 removed (c4.5e) the mandate member
+// is `MandateV2`, the only mandate envelope that now exists.
 export type Envelope =
-  | Mandate
+  | MandateV2
   | KeyFile
   | KeyRedirect
   | EmailRotation

@@ -31,8 +31,30 @@
 import { canonicalReleaseEndorsement } from "./canonical.js";
 import { intermediateMerkleRoot, verify } from "./crypto.js";
 import { currentAuthorityV2, type VerifiedChainV2 } from "./verifierV2.js";
-import type { EndorsementFailReason, VerifiedEndorsements } from "./endorsement.js";
 import type { ReleaseEndorsement } from "./types.js";
+
+/**
+ * Why a ReleaseEndorsement was rejected. Re-homed here from the removed
+ * v1 endorsement.ts (c4.5e): the result/reason shapes are unchanged so
+ * consumers that swapped the v1 call for the v2 one keep the identical
+ * downstream types; this module is now their canonical home.
+ */
+export type EndorsementFailReason =
+  | "signature-invalid"
+  | "approval-rule-unsatisfied"
+  | "signer-not-authorized"
+  | "no-authority-at-issuance"
+  | "merkle-root-mismatch"
+  | "predecessor-mismatch"
+  | "genesis-must-have-no-predecessor"
+  | "non-genesis-must-have-predecessor"
+  | "duplicate-release-id";
+
+export interface VerifiedEndorsements {
+  endorsements: ReleaseEndorsement[];
+  validEndorsements: ReleaseEndorsement[];
+  rejections: { endorsement: ReleaseEndorsement; reason: EndorsementFailReason; detail?: string }[];
+}
 
 type SingleResult =
   | { ok: true }

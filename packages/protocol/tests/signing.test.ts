@@ -9,11 +9,9 @@ import {
   signKeyFile,
   signKeyIntroductionRequest,
   signKeyRedirect,
-  signMandate,
   signReleaseEndorsement,
   signCaEndorsement,
   privKeySigner,
-  signMandateWith,
   signReleaseEndorsementWith,
   signCaEndorsementWith,
   signKeyFileWith,
@@ -26,7 +24,6 @@ import {
   canonicalKeyFile,
   canonicalKeyIntroductionRequest,
   canonicalKeyRedirect,
-  canonicalMandate,
   canonicalReleaseEndorsement,
   canonicalCaEndorsement,
 } from "../src/canonical.js";
@@ -38,27 +35,6 @@ function keypair(seedByte: number) {
 }
 
 describe("sign* roundtrips", () => {
-  it("signMandate signature verifies against canonicalMandate", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const m = signMandate(
-      {
-        kind: "Mandate",
-        version: 1,
-        mandateId: "g1",
-        track: "release",
-        holder: alice.pubKey,
-        issuedAt: "2026-01-01T00:00:00Z",
-        expiresAt: "2026-03-01T00:00:00Z",
-        successors: [bob.pubKey],
-        signedBy: alice.pubKey,
-      },
-      [{ privKey: alice.privKey }],
-    );
-    const bytes = canonicalMandate(m);
-    expect(verify(m.signatures[0]!.sig, bytes, m.signatures[0]!.pubkey)).toBe(true);
-  });
-
   it("signKeyFile self-signs against canonicalKeyFile", () => {
     const alice = keypair(1);
     const k = signKeyFile(
@@ -175,17 +151,6 @@ describe("sign* roundtrips", () => {
 });
 
 describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
-  const mandate = (holder: string) => ({
-    kind: "Mandate" as const,
-    version: 1 as const,
-    mandateId: "m1",
-    track: "ca",
-    holder,
-    issuedAt: "2026-03-01T00:00:00Z",
-    expiresAt: "2026-09-01T00:00:00Z",
-    successors: [holder],
-    signedBy: holder,
-  });
   const caEndorsement = (signedBy: string) => ({
     kind: "CaEndorsement" as const,
     version: 1 as const,
@@ -230,15 +195,6 @@ describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
     };
   }
 
-  it("privKeySigner produces byte-identical output to the sync path (Mandate)", async () => {
-    const a = keypair(1);
-    const sync = signMandate(mandate(a.pubKey), [{ privKey: a.privKey }]);
-    const viaSigner = await signMandateWith(mandate(a.pubKey), [
-      privKeySigner(a.privKey),
-    ]);
-    expect(viaSigner).toEqual(sync);
-  });
-
   it("privKeySigner is byte-identical for CaEndorsement (the weekly lease)", async () => {
     const a = keypair(2);
     const sync = signCaEndorsement(caEndorsement(a.pubKey), [
@@ -282,19 +238,6 @@ describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
     expect(
       verify(ca.signatures[0]!.sig, canonicalCaEndorsement(ca), a.pubKey),
     ).toBe(true);
-  });
-
-  it("collects multiple signers in order (M-of-N), token + hex mixed", async () => {
-    const a = keypair(5);
-    const b = keypair(6);
-    const m = await signMandateWith(mandate(a.pubKey), [
-      fakeTokenSigner(a.privKey, a.pubKey),
-      privKeySigner(b.privKey),
-    ]);
-    expect(m.signatures.map((s) => s.pubkey)).toEqual([a.pubKey, b.pubKey]);
-    const bytes = canonicalMandate(m);
-    expect(verify(m.signatures[0]!.sig, bytes, a.pubKey)).toBe(true);
-    expect(verify(m.signatures[1]!.sig, bytes, b.pubKey)).toBe(true);
   });
 
   // ── identity envelopes: single SELF-signature (register / rotate-email)
