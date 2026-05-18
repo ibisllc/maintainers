@@ -6,10 +6,23 @@
  *                 named successors, recent activity
  *   - roster    : named keys + emails + role + avatar placeholder
  *   - activity  : last N envelopes by kind, newest first
+ *
+ * **#31 — STATUS / PREVIEW ONLY (LOCKED Phase-2 v2 model).** This view
+ * never signs. It verifies each track's mandate log FORWARD from the
+ * first on-repo mandate (the read-only-preview anchor — the web UI has
+ * no baked pin; a real consumer bakes `mandatePinHash` of a chosen
+ * mandate, see the v2 security boundary) via `verifyMandateChainFromPin`
+ * + `currentAuthorityV2`. There is no policy.json / rootPolicy /
+ * TrackPolicy: the succession rule is inline in each mandate.
  */
 
-import { currentAuthority, lastExpiredMandate, verifyTrack, type VerifiedTrack } from "@maintainers/protocol";
-import type { Mandate, TrackPolicy } from "@maintainers/protocol";
+import {
+  currentAuthorityV2,
+  mandatePinHash,
+  verifyMandateChainFromPin,
+  type MandateV2,
+  type VerifiedChainV2,
+} from "@maintainers/protocol";
 import { daysFromNow, el, mount, relativeTime, shortHex } from "../dom.js";
 import { lookupHolder, type ParsedFolder, type ParsedTrack } from "../parse-folder.js";
 import type { ProjectView, StateStore } from "../state.js";
@@ -38,19 +51,7 @@ export function renderProject(view: ProjectView, root: HTMLElement, store: State
         el(
           "p.muted",
           null,
-          "This repo doesn't have a maintainers folder yet. Run onboarding to create one.",
-        ),
-        el(
-          "div.row.end",
-          null,
-          el(
-            "button.primary",
-            {
-              onClick: () =>
-                store.update({ route: { kind: "onboard", step: "project" } }),
-            },
-            "Set up maintainers",
-          ),
+          "This repo doesn't have a maintainers folder yet. Set one up with the maintainers CLI.",
         ),
       ),
     );
@@ -62,7 +63,7 @@ export function renderProject(view: ProjectView, root: HTMLElement, store: State
   let body: HTMLElement;
   switch (view) {
     case "health":
-      body = renderHealth(folder, repoUrl, store);
+      body = renderHealth(folder, store.get().now);
       break;
     case "roster":
       body = renderRoster(folder);
@@ -77,12 +78,31 @@ export function renderProject(view: ProjectView, root: HTMLElement, store: State
     el(
       "div.project",
       null,
-      el("h1", null, folder.rootPolicy?.project.name ?? repoUrl),
+      el("h1", null, projectName(folder) ?? repoUrl),
       el("p.muted", null, repoUrl),
       tabs(view, store),
       body,
     ),
   );
+}
+
+/**
+ * v2: project metadata lives inline on the from-scratch (root) mandate
+ * of any track (not in a policy.json). Surface the first one we see.
+ */
+function projectName(folder: ParsedFolder): string | null {
+  for (const t of folder.tracks) {
+    for (const m of t.mandates) {
+      if (m.project?.name) return m.project.name;
+    }
+  }
+  return null;
+}
+
+/** Forward-verify a track anchored at its first on-repo mandate. */
+function verifyTrackChain(track: ParsedTrack): VerifiedChainV2 | null {
+  if (track.mandates.length === 0) return null;
+  return verifyMandateChainFromPin(mandatePinHash(track.mandates[0]!), track.mandates);
 }
 
 function tabs(active: ProjectView, store: StateStore): HTMLElement {
@@ -100,12 +120,11 @@ function tabs(active: ProjectView, store: StateStore): HTMLElement {
 
 // ---- Health ----
 
-function renderHealth(folder: ParsedFolder, repoUrl: string, store: StateStore): HTMLElement {
-  const now = store.get().now;
+function renderHealth(folder: ParsedFolder, now: Date): HTMLElement {
   return el(
     "div.health",
     null,
-    ...folder.tracks.map((t) => renderTrackHealth(t, folder, repoUrl, now, store)),
+    ...folder.tracks.map((t) => renderTrackHealth(t, folder, now)),
     folder.tracks.length === 0
       ? el("div.alert.warn", null, "No tracks declared in this project.")
       : null,
@@ -115,21 +134,24 @@ function renderHealth(folder: ParsedFolder, repoUrl: string, store: StateStore):
 function renderTrackHealth(
   track: ParsedTrack,
   folder: ParsedFolder,
-  repoUrl: string,
   now: Date,
-  store: StateStore,
 ): HTMLElement {
-  if (!track.policy) {
+  const chain = verifyTrackChain(track);
+  if (!chain) {
     return el(
       "div.panel",
       null,
       el("h2", null, `Track: ${track.name}`),
-      el("div.alert.warn", null, "Missing track policy. Cannot verify mandates."),
+      el("div.alert.warn", null, "No mandates on this track yet."),
     );
   }
-  const verified = verifyTrack(track.name, track.policy, track.mandates);
-  const auth = currentAuthority(verified, now);
-  const expired = !auth ? lastExpiredMandate(verified, now) : null;
+  const auth = currentAuthorityV2(chain, now);
+  // v2 has no holder-in-window vs after-expiry split — the last valid
+  // mandate is simply the most recent succession; if its window has
+  // elapsed, its named `successors` are who may continue (informational
+  // for this read-only view).
+  const last: MandateV2 | undefined = chain.validMandates[chain.validMandates.length - 1];
+  const expired = !auth ? last ?? null : null;
   const head = el(
     "div.row",
     null,
@@ -172,21 +194,6 @@ function renderTrackHealth(
             ...auth.successors.map((s) => renderSuccessorChip(s, folder)),
           )
         : el("p.muted", null, "No successors named. Add some on the next renewal."),
-      el(
-        "div.row.end",
-        null,
-        el(
-          "button.primary",
-          {
-            onClick: () =>
-              store.update({
-                route: { kind: "renew", repoUrl, track: track.name },
-                currentMandate: auth.mandate,
-              }),
-          },
-          expiringSoon ? "Renew now" : "Renew",
-        ),
-      ),
     );
   } else if (expired) {
     const expiredHolder = lookupHolder(folder, expired.holder);
@@ -196,7 +203,7 @@ function renderTrackHealth(
       el(
         "div.alert.warn",
         null,
-        `Mandate expired ${relativeTime(expired.expiresAt, now)}. Any named successor may take over.`,
+        `Mandate expired ${relativeTime(expired.expiresAt, now)}. Any named successor may continue the track.`,
       ),
       el(
         "p",
@@ -212,38 +219,25 @@ function renderTrackHealth(
             null,
             el("h3", null, "Named successors"),
             ...expired.successors.map((s) => renderSuccessorChip(s, folder)),
-            el(
-              "div.row.end",
-              null,
-              el(
-                "button.primary",
-                {
-                  onClick: () =>
-                    store.update({
-                      route: { kind: "takeover", repoUrl, track: track.name },
-                      currentMandate: expired,
-                    }),
-                },
-                "Take over",
-              ),
-            ),
           )
-        : el("div.alert.err", null, "No successors were named on the expired mandate; nobody can take over without manual intervention."),
+        : el("div.alert.err", null, "No successors were named on the expired mandate; nobody can continue without manual intervention."),
     );
   } else {
     mandateSection = el(
       "p.muted",
       null,
-      "No mandates yet. The genesis mandate is created by onboarding.",
+      chain.rootError
+        ? `Chain could not be anchored (${chain.rootError}).`
+        : "No valid mandates yet.",
     );
   }
   const rejectionsSection =
-    verified.rejections.length > 0
+    chain.rejections.length > 0
       ? el(
           "details",
           null,
-          el("summary", null, `${verified.rejections.length} rejected mandate(s)`),
-          ...verified.rejections.map((r) =>
+          el("summary", null, `${chain.rejections.length} rejected mandate(s)`),
+          ...chain.rejections.map((r) =>
             el(
               "p.hint",
               null,
@@ -347,7 +341,7 @@ function renderActivity(folder: ParsedFolder, now: Date): HTMLElement {
       rows.push({
         when: Date.parse(m.issuedAt),
         kind: `Mandate (${t.name})`,
-        summary: `${m.signedBy === m.holder ? "self-issued" : "takeover"} by ${shortHex(m.holder)} until ${m.expiresAt}`,
+        summary: `${m.signedBy === m.holder ? "self-issued" : "succession"} by ${shortHex(m.holder)} until ${m.expiresAt}`,
       });
     }
   }
@@ -406,10 +400,10 @@ function renderActivity(folder: ParsedFolder, now: Date): HTMLElement {
   );
 }
 
-/** Exported for tests. */
-export function _verifyTrackForTest(
-  policy: TrackPolicy,
-  mandates: Mandate[],
-): VerifiedTrack {
-  return verifyTrack(policy.track, policy, mandates);
+/** Exported for tests: forward-verify a track's v2 mandate log. */
+export function _verifyChainForTest(mandates: MandateV2[]): VerifiedChainV2 {
+  return verifyMandateChainFromPin(
+    mandates.length > 0 ? mandatePinHash(mandates[0]!) : "",
+    mandates,
+  );
 }
