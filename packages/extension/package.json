@@ -12,7 +12,7 @@
     "test": "vitest run --dir tests"
   },
   "dependencies": {
-    "@maintainers/protocol": "0.1.0",
+    "@ibisllc/maintainers": "0.1.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^1.5.0"
   },

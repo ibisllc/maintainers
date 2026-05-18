@@ -22,7 +22,7 @@
  * banner that honestly states this is low-stakes.
  */
 
-import { signKeyFileWith, canonicalKeyFile, type KeyFile } from "@maintainers/protocol";
+import { signKeyFileWith, canonicalKeyFile, type KeyFile } from "@ibisllc/maintainers";
 import * as path from "node:path";
 import {
   type ParsedArgs,

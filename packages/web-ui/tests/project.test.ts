@@ -14,7 +14,7 @@ import {
   currentAuthority,
   mandatePinHash,
   verifyMandateChainFromPin,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { _verifyChainForTest } from "../src/views/project.js";
 import { kp, mk } from "./fixtures.js";
 

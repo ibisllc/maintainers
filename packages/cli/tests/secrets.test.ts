@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { generateKeypair, sign } from "@maintainers/protocol";
+import { generateKeypair, sign } from "@ibisllc/maintainers";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
 import { CliError } from "../src/lib/args.js";

@@ -31,7 +31,7 @@ import {
   type Mandate,
   type VerifiedChain,
   type VerifiedEndorsements,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { CliError, type ParsedArgs, optionalFlag } from "../lib/args.js";
 import { readStore } from "../lib/store.js";
 

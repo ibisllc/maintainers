@@ -22,7 +22,7 @@ import {
   intermediateMerkleRoot,
   signReleaseEndorsementWith,
   type ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { CliError, type ParsedArgs, requireFlag, optionalFlag } from "../lib/args.js";

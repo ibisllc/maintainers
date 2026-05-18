@@ -13,7 +13,7 @@ A single, framework-free TypeScript module that knows how to:
 No React, no Vue, no Svelte — just DOM. The whole module is ~2,300 lines
 of TypeScript including the wizard, the dashboards, a tiny CBOR decoder,
 a STORE-only ZIP writer, and the WebAuthn-PRF glue. Zero runtime
-dependencies beyond `@maintainers/protocol`.
+dependencies beyond `@ibisllc/maintainers`.
 
 ## Quick start
 
@@ -92,7 +92,7 @@ The clean way out: the WebAuthn PRF extension. PRF returns a
 deterministic 32-byte secret bound to the credential, surfaced only on
 user-verified assertions. We use that secret as the Ed25519 seed; the
 keypair lives only in page memory for the duration of the signing
-operation; canonical bytes are signed by `@maintainers/protocol`'s
+operation; canonical bytes are signed by `@ibisllc/maintainers`'s
 ordinary `sign()`. The Yubikey serves as a tamper-resistant
 key-derivation oracle.
 
@@ -125,7 +125,7 @@ src/
 ├── styles.ts           one big CSS string + injector
 ├── adapter.ts          AdapterClient + staticAdapter + serverAdapter
 ├── parse-folder.ts     bytes → ParsedFolder
-├── envelopes.ts        wrappers around @maintainers/protocol's sign* + path helpers
+├── envelopes.ts        wrappers around @ibisllc/maintainers's sign* + path helpers
 ├── repo-provider.ts    parseRepoUrl + BUILTIN_PROVIDERS + raw URL builders
 ├── webauthn.ts         enrollMaintainerIdentity + assertAndDerive (PRF-based)
 ├── cbor.ts             minimal CBOR decoder for attestationObject / COSE_Key

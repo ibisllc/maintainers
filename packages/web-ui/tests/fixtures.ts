@@ -11,7 +11,7 @@ import {
   signMandate,
   type KeyFile,
   type Mandate,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 const DAY = 86400;
 

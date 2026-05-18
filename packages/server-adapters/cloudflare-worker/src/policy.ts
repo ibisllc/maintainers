@@ -52,7 +52,7 @@ import {
   type ReleaseEndorsement,
   type CaEndorsement,
   type Pubkey,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 export const MAINTAINERS_PREFIX = ".maintainers/";
 

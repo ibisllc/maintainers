@@ -36,7 +36,7 @@ import type {
   KeyFile,
   Mandate,
   ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import type { RepoLocation } from "./repo-detect.js";
 
 export interface KVStore {

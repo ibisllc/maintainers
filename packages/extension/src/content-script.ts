@@ -3,7 +3,7 @@
  *
  * 1. Detect "this URL is a repo page".
  * 2. Fetch `.maintainers/` via raw-content URLs (with 30s cache).
- * 3. Verify the chain using @maintainers/protocol.
+ * 3. Verify the chain using @ibisllc/maintainers.
  * 4. Render the Shadow-DOM overlay.
  *
  * Re-runs on SPA navigation (github, gitlab use turbolinks-style nav)

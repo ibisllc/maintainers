@@ -22,7 +22,7 @@ import {
   verifyMandateChainFromPin,
   type Mandate,
   type VerifiedChain,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { daysFromNow, el, mount, relativeTime, shortHex } from "../dom.js";
 import { lookupHolder, type ParsedFolder, type ParsedTrack } from "../parse-folder.js";
 import type { ProjectView, StateStore } from "../state.js";

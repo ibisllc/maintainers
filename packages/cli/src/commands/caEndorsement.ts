@@ -29,7 +29,7 @@ import {
   signCaEndorsementWith,
   canonicalCaEndorsement,
   type CaEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import * as path from "node:path";
 import { parseDurationMs, isoFromMsSince } from "../lib/duration.js";
 import {

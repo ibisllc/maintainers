@@ -23,7 +23,7 @@
  * Secrets (PIN, key material) are never printed by any of this.
  */
 
-import type { Ed25519Signer } from "@maintainers/protocol";
+import type { Ed25519Signer } from "@ibisllc/maintainers";
 import {
   loadSigner,
   type SignerOptions,

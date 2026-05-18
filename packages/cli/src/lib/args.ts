@@ -4,7 +4,7 @@
  * Recognizes `--flag value`, `--flag=value`, and boolean `--flag`. Anything
  * not preceded by a `--name` is collected as a positional. We avoid a third-
  * party arg parser because the CLI's surface is small and we want zero
- * runtime deps beyond @maintainers/protocol.
+ * runtime deps beyond @ibisllc/maintainers.
  */
 
 export interface ParsedArgs {
