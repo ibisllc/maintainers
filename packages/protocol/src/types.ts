@@ -120,7 +120,7 @@ export interface CaEndorsement {
 }
 
 // ---------------------------------------------------------------------------
-// Mandate v2 — LOCKED Phase-2 v2 model (docs/spec/v2.md; flagship
+// Mandate v2 — LOCKED Phase-2 v2 model (docs/spec/v1.md; flagship
 // docs/v1-launch-program.md "Phase-2 DESIGN DECISION — LOCKED v2").
 //
 // Three changes vs v1, all in one envelope:

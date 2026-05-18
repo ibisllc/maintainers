@@ -1,6 +1,6 @@
 /**
  * Verifier algorithm for the maintainers protocol — v2 (LOCKED
- * Phase-2 v2 model). Implements §4 of docs/spec/v2.md.
+ * Phase-2 v2 model). Implements §4 of docs/spec/v1.md.
  *
  * The whole model in one sentence: "pin a mandate, verify FORWARD; the
  * mandate carries its own succession rule; there is no privileged
