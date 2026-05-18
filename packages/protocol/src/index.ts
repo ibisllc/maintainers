@@ -5,6 +5,8 @@ export * from "./signing.js";
 export * from "./verifier.js";
 export * from "./verifierV2.js";
 export * from "./endorsement.js";
+export * from "./endorsementV2.js";
 export * from "./caEndorsement.js";
+export * from "./caEndorsementV2.js";
 export * from "./storage.js";
 export * from "./encryptedBlobAdapter.js";
