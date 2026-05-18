@@ -1,4 +1,4 @@
-# @maintainers/protocol
+# @ibisllc/maintainers
 
 A trust protocol for declaring, renewing, and transferring signing
 authority over a versioned artifact (typically a git repository, but the
@@ -21,7 +21,7 @@ zero-dependency `fetch()` client.
 ## Install
 
 ```
-npm i @maintainers/protocol
+npm i @ibisllc/maintainers
 ```
 
 ESM only. Runtime deps: `@noble/curves`, `@noble/hashes`.
@@ -35,7 +35,7 @@ oversized doc, path escape, malformed envelope, absent or forked pin) is
 a fail-closed return value, never a thrown exception.
 
 ```ts
-import { verifyFromFetch } from "@maintainers/protocol";
+import { verifyFromFetch } from "@ibisllc/maintainers";
 
 const verdict = await verifyFromFetch("https://example.org", {
   pin: "<the mandate pin hash you compiled into your build>",
@@ -57,7 +57,7 @@ import {
   verifyMandateChainFromPin,
   currentAuthority,
   pinOf,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 const chain = verifyMandateChainFromPin(pin, mandates); // never throws
 const auth = currentAuthority(chain, new Date());        // holder or null

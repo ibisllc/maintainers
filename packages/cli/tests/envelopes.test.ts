@@ -29,7 +29,7 @@ import {
   verify,
   verifyMandateChainFromPin,
   type Mandate,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { buildEndorsement } from "../src/commands/endorsement.js";
 import { writeMandate } from "../src/lib/store.js";
 

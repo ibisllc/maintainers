@@ -16,7 +16,7 @@ import {
   verifyMandateChainFromPin,
   currentAuthority,
   generateKeypair,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import {
   assembleUpsertMandate,
   buildUpsertMandate,

@@ -37,7 +37,7 @@ import {
   canonicalMandate,
   mandatePinHash,
   type Mandate,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import * as path from "node:path";
 import { parseDurationMs, isoFromMsSince } from "../lib/duration.js";
 import {

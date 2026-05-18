@@ -8,7 +8,7 @@ import {
   signMandate,
   signMandateWith,
   canonicalCaEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { CliError } from "../src/lib/args.js";
 import {
   loadPrivKey,

@@ -27,7 +27,7 @@ import type {
   KeyFile,
   Mandate,
   ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { CliError } from "./args.js";
 
 export interface MaintainersStore {

@@ -20,7 +20,7 @@ import {
   type KeyFile,
   type Mandate,
   type ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 const DAY = 86_400_000;
 

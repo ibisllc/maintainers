@@ -16,7 +16,7 @@
     "test": "vitest run --dir tests"
   },
   "dependencies": {
-    "@maintainers/protocol": "*"
+    "@ibisllc/maintainers": "*"
   },
   "license": "BUSL-1.1"
 }

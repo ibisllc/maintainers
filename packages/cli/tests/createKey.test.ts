@@ -17,7 +17,7 @@ import {
   canonicalKeyFile,
   generateKeypair,
   verify,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { assembleCreateKey, buildCreateKey } from "../src/commands/createKey.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";

@@ -24,7 +24,7 @@ import type {
   KeyFile,
   KeyRedirect,
   Mandate,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 export interface Env {
   GITHUB_MAINTAINERS_PAT: string;

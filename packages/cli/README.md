@@ -14,7 +14,7 @@ then invoke the shim:
 node packages/cli/bin/maintainers help
 ```
 
-> **Note (transient).** Today the `@maintainers/protocol` package exports
+> **Note (transient).** Today the `@ibisllc/maintainers` package exports
 > its `.ts` source as `main`, which means running the compiled CLI under
 > plain Node still hits a TypeScript import. Either invoke via a TS
 > loader (`npx tsx packages/cli/src/index.ts …`) or wait for the

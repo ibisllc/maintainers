@@ -16,7 +16,7 @@
     "dev": "wrangler dev"
   },
   "dependencies": {
-    "@maintainers/protocol": "*"
+    "@ibisllc/maintainers": "*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240909.0",

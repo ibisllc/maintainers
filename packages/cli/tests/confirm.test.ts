@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { generateKeypair } from "@maintainers/protocol";
+import { generateKeypair } from "@ibisllc/maintainers";
 import {
   confirmGate,
   confirmPhrase,

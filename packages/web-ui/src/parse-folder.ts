@@ -8,7 +8,7 @@
  * `tracks/<track>/mandates/*.json`, each a version-1 Mandate. This
  * module is intentionally tolerant: it surfaces parse errors per file
  * rather than throwing, so a single malformed envelope doesn't blank
- * the whole UI. The verifier (in @maintainers/protocol) is the
+ * the whole UI. The verifier (in @ibisllc/maintainers) is the
  * authority on what's accepted; this layer just unpacks bytes into
  * typed shapes.
  */
@@ -18,7 +18,7 @@ import type {
   KeyRedirect,
   Mandate,
   ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 export interface RawFolder {
   /** Map of relative path under `.maintainers/` → file bytes. */

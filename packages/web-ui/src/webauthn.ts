@@ -38,7 +38,7 @@
  * scenarios.
  */
 
-import { generateKeypair } from "@maintainers/protocol";
+import { generateKeypair } from "@ibisllc/maintainers";
 import { decodeCbor, expectBytes, expectMap } from "./cbor.js";
 
 /** A YubiKey-backed identity, sourced from a single PRF derivation. */

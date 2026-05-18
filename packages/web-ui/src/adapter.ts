@@ -21,7 +21,7 @@ import type {
   KeyRedirect,
   Mandate,
   ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import {
   type ParsedFolder,
   type RawFolder,

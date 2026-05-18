@@ -27,7 +27,7 @@ import {
   signMandateWith,
   verify,
   type Mandate,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import {
   assembleCaEndorsement,
   buildCaEndorsement,

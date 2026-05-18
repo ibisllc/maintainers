@@ -1,5 +1,5 @@
 {
-  "name": "@maintainers/protocol",
+  "name": "@ibisllc/maintainers",
   "version": "0.1.0",
   "type": "module",
   "description": "Pin-a-mandate, verify-forward trust protocol: declare, renew, and transfer signing authority over a versioned artifact. The bake is the ceremony.",

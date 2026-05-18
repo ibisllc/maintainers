@@ -41,7 +41,7 @@ Request body:
 ```
 
 `envelopeBytes` is the hex-encoded canonical-bytes derivation of the
-envelope (see `@maintainers/protocol`'s `canonical*()` helpers). The
+envelope (see `@ibisllc/maintainers`'s `canonical*()` helpers). The
 Worker re-derives it locally and refuses any request where they
 diverge — closing the "send signature for envelope X while claiming
 envelope Y" attack.
@@ -151,7 +151,7 @@ covers every policy-decision branch and the Worker's helper functions.
 
 ## Dependencies
 
-- `@maintainers/protocol` — the canonical-bytes + verifier package
+- `@ibisllc/maintainers` — the canonical-bytes + verifier package
   (workspace-local).
 - `@cloudflare/workers-types` (devDep) — type declarations.
 - `wrangler` (devDep) — the deploy CLI.

@@ -27,7 +27,7 @@ import {
   type Mandate,
   type KeyFile,
   type ReleaseEndorsement,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { decide, summarizeState, type RepoState } from "../src/policy.js";
 
 const DAY = 86400;

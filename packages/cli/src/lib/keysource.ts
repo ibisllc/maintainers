@@ -31,7 +31,7 @@ import {
   pubKeyFromPriv,
   privKeySigner,
   type Ed25519Signer,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { CliError } from "./args.js";
 
 export interface LoadedPubKey {

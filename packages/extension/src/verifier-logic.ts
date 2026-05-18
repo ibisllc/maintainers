@@ -1,5 +1,5 @@
 /**
- * Wraps the @maintainers/protocol v2 verifier into a UI-ready shape.
+ * Wraps the @ibisllc/maintainers v2 verifier into a UI-ready shape.
  * **LOCKED Phase-2 v2 model** (Mandate v2; verify FORWARD from a pinned
  * mandate; no policy.json; holder-signs endorsements).
  *
@@ -31,7 +31,7 @@ import {
   type ReleaseEndorsement,
   type TakeoverAlarm,
   type VerifiedChain,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 
 export type AlarmLevel = "red" | "yellow" | "info";
 

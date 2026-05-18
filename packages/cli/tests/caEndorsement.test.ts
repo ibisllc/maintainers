@@ -27,7 +27,7 @@ import {
   verifyCaEndorsements,
   verifyMandateChainFromPin,
   type Mandate,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import { buildCaEndorsement } from "../src/commands/caEndorsement.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";

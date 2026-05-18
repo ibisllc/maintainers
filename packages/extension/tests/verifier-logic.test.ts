@@ -16,7 +16,7 @@ import {
   generateKeypair,
   mandatePinHash,
   verifyMandateChainFromPin,
-} from "@maintainers/protocol";
+} from "@ibisllc/maintainers";
 import {
   computeOverlayState,
   formatDuration,
