@@ -31,7 +31,12 @@ import {
 } from "./keysource.js";
 import { CliError } from "./args.js";
 
-export type CeremonyKind = "genesis" | "mandate" | "takeover" | "ca-endorsement";
+export type CeremonyKind =
+  | "genesis"
+  | "mandate"
+  | "takeover"
+  | "ca-endorsement"
+  | "create-key";
 
 /**
  * The output of an `assemble*` call: everything needed to either preview
@@ -54,6 +59,12 @@ export interface Assembled<U> {
   /** Extra append-only writes a real run would also make if missing
    *  (e.g. a track `policy.json` on genesis) — informational only. */
   alsoIfMissing?: { relative: string }[];
+  /** Ceremony-specific extra banner lines (e.g. the loud FROM-SCRATCH
+   *  ORIGIN warning for an `upsert-mandate` with no predecessor). The
+   *  assemble step decides these — it knows the sub-case the static
+   *  `ceremonyBanner` switch cannot see. Appended inside the banner so
+   *  it still precedes the byte preview + the typed confirm. */
+  bannerExtra?: string[];
 }
 
 function toHex(bytes: Uint8Array): string {
@@ -69,6 +80,15 @@ function toHex(bytes: Uint8Array): string {
  */
 export function ceremonyBanner<U>(a: Assembled<U>): string[] {
   const head = "────────────────────────────────────────────────────────────";
+  const lines = bannerBody(a, head);
+  if (a.bannerExtra && a.bannerExtra.length > 0) {
+    // splice the extra lines just inside the closing rule
+    return [...lines.slice(0, -1), ...a.bannerExtra, head];
+  }
+  return lines;
+}
+
+function bannerBody<U>(a: Assembled<U>, head: string): string[] {
   switch (a.ceremony) {
     case "genesis":
       return [
@@ -107,6 +127,15 @@ export function ceremonyBanner<U>(a: Assembled<U>): string[] {
         "CA LEASE — authorize the hot operational CA pubkey until notAfter.",
         "A LAPSED lease fail-closes the CA globally (no revocation list) —",
         "renew before notAfter. Overlapping leases are fine.",
+        head,
+      ];
+    case "create-key":
+      return [
+        head,
+        "REGISTER KEY — a self-signed identity label (display name +",
+        "email) for this pubkey. This is NOT a grant of authority: a key",
+        "file is non-load-bearing (trust operates on the pubkey, never",
+        "the email). Safe to redo — just remove/rename the old file.",
         head,
       ];
   }

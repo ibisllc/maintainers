@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
   CaEndorsement,
+  KeyFile,
   Mandate,
   ReleaseEndorsement,
   RootPolicy,
@@ -144,6 +145,40 @@ export function writeCaEndorsement(
     throw new CliError(`refusing to overwrite existing CA lease file: ${abs}`);
   }
   fs.writeFileSync(abs, JSON.stringify(e, null, 2) + "\n", "utf8");
+  return { absolute: abs, relative: path.relative(rootDir, abs) };
+}
+
+/**
+ * Filesystem-safe name for a key file: `keys/<sanitized-email>.json`.
+ * Email is a human label, not a credential (spec non-goal — identity
+ * for trust is the pubkey), so a lossy sanitization is fine for the
+ * on-disk name; the authoritative `currentEmail` lives inside the
+ * signed envelope.
+ */
+export function keyFileFilename(currentEmail: string): string {
+  const safe = currentEmail.replace(/[^A-Za-z0-9.@_+-]/g, "_");
+  return `${safe}.json`;
+}
+
+/**
+ * Write a self-signed KeyFile under `<rootDir>/keys/<email>.json`
+ * (spec §2.4 / §7). A KeyFile is a non-load-bearing identity label —
+ * verification operates on the pubkey, never the email — so this is
+ * deliberately low-stakes; still append-only (refuses to overwrite, so
+ * a re-registration is an explicit delete/rename, never a silent
+ * clobber of a record someone may be rendering).
+ */
+export function writeKeyFile(rootDir: string, k: KeyFile): WrittenPath {
+  const dir = path.join(rootDir, "keys");
+  fs.mkdirSync(dir, { recursive: true });
+  const abs = path.join(dir, keyFileFilename(k.currentEmail));
+  if (fs.existsSync(abs)) {
+    throw new CliError(
+      `refusing to overwrite existing key file: ${abs} ` +
+        `(a re-registration must explicitly remove/rename the old file)`,
+    );
+  }
+  fs.writeFileSync(abs, JSON.stringify(k, null, 2) + "\n", "utf8");
   return { absolute: abs, relative: path.relative(rootDir, abs) };
 }
 

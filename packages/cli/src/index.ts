@@ -40,6 +40,7 @@ import { runGenesis } from "./commands/genesis.js";
 import { runMandate } from "./commands/mandate.js";
 import { runEndorsement } from "./commands/endorsement.js";
 import { runCaEndorsement } from "./commands/caEndorsement.js";
+import { runCreateKey } from "./commands/createKey.js";
 import { runTakeover } from "./commands/takeover.js";
 import { runStatus, runVerify } from "./commands/verify.js";
 
@@ -82,6 +83,8 @@ export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
         return await runEndorsement(args, env);
       case "ca-endorsement":
         return await runCaEndorsement(args, env);
+      case "create-key":
+        return await runCreateKey(args, env);
       case "takeover":
         return await runTakeover(args, env);
       case "verify":
@@ -131,6 +134,7 @@ function printUsage(println: (s: string) => void): void {
   println("  endorsement     --commit 40HEX --tag SEMVER --signing-key KEY [--previous-id UUID --previous-commit 40HEX] [--intermediates auto|file:X|csv] [--track release] [--path .maintainers]");
   println("  ca-endorsement  --ca-pubkey 64HEX --signing-key KEY [--scope S] [--duration 7d] [--track ca] [--path .maintainers] [--dry-run]");
   println("  takeover        --track NAME --successor-key KEY --new-holder KEY [--successors A,B] [--duration 60d] [--path .maintainers] [--dry-run]");
+  println("  create-key      --signing-key KEY --display-name NAME --email ADDR [--introduction-mandate UUID] [--photo URL] [--github H] [--role R] [--path .maintainers] [--dry-run]");
   println("  verify          [--path .maintainers] [--as-of RFC3339|now]");
   println("  status          [--path .maintainers] [--as-of RFC3339|now]");
   println("");
@@ -149,6 +153,7 @@ export { buildRenewal, assembleRenewal } from "./commands/mandate.js";
 export { buildEndorsement } from "./commands/endorsement.js";
 export { buildCaEndorsement, assembleCaEndorsement } from "./commands/caEndorsement.js";
 export { buildTakeover, assembleTakeover } from "./commands/takeover.js";
+export { buildCreateKey, assembleCreateKey } from "./commands/createKey.js";
 export { buildReport } from "./commands/verify.js";
 export {
   renderPreview,
