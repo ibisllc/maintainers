@@ -1,0 +1,81 @@
+{
+  "name": "neg-10a-rolled-back-dropped-intermediate",
+  "description": "Dropping an intermediate mandate so the suffix re-chains to the wrong predecessor is detected: k2 signed by `alice` is not in root.successors ⇒ rejects 'signer-not-in-successor-set'; at `now` past the root window there is no live authority ⇒ reject.",
+  "input": {
+    "pin": "bfbcfad38c42c1fc68852d63046e14e70a8f9c74787d83ab544489577cc1df9f",
+    "now": "2026-05-01T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000000",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-03-02T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "project": {
+            "name": "conformance-fixture",
+            "contact": "security@example.org",
+            "tracks": [
+              "release",
+              "ca"
+            ]
+          },
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "1c78ae94ddf349c014fcd86b61fd917d32f46ca735e260add08adb906c3606da3610faeb55d025f7386e2f07ec9d403ef874b1cd4ae8f95c81620a9d8fdd9309"
+            }
+          ]
+        },
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000002",
+          "track": "release",
+          "holder": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "issuedAt": "2026-04-10T00:00:00Z",
+          "expiresAt": "2026-06-09T00:00:00Z",
+          "successors": [
+            "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "signedBy": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "signatures": [
+            {
+              "pubkey": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+              "sig": "dc8826f38fae3bafaf2d98c115a35f86a9f5b384f3cc0be5d9c1ba18328fdb8ae21878b173a1c721383135f28eff74de04e60088f09aa5a095221f1d12ee2b08"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "signer-not-in-successor-set",
+    "subject": "mandate-chain",
+    "track": "release"
+  }
+}

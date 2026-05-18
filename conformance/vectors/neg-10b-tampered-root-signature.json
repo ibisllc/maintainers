@@ -1,0 +1,56 @@
+{
+  "name": "neg-10b-tampered-root-signature",
+  "description": "A pinned root whose declared signature was replaced with a forged one (pin still matches — it binds content, not signatures) ⇒ the root self-validity check rejects rootError 'root-signature-invalid' ⇒ reject.",
+  "input": {
+    "pin": "093faa17449ad568b7235c973ece75cd7902c08a6b25331b3eb92b9ec78474fa",
+    "now": "2026-01-10T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000000",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-03-02T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+            "6b79c57e6a095239282c04818e96112f3f03a4001ba97a564c23852a3f1ea5fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "project": {
+            "name": "conformance-fixture",
+            "contact": "security@example.org",
+            "tracks": [
+              "release",
+              "ca"
+            ]
+          },
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "root-signature-invalid",
+    "subject": "mandate-chain",
+    "track": "release"
+  }
+}

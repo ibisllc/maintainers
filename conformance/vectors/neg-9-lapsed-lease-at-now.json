@@ -1,0 +1,66 @@
+{
+  "name": "neg-9-lapsed-lease-at-now",
+  "description": "The CaEndorsement lease window [notBefore,notAfter) does NOT contain the consumer's own NOW (host withheld the next lease) ⇒ verifyCaEndorsements rejects 'lease-expired' at the caller's clock (D3 — fail-closed within one window).",
+  "input": {
+    "pin": "02b88885e8bb1b6d41fd14add287fe62a4ba01803b2c72104f12b2884d0449b1",
+    "now": "2026-04-01T00:00:00Z",
+    "track": "ca",
+    "mandatesByTrack": {
+      "ca": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-0000000000c9",
+          "track": "ca",
+          "holder": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-12-01T00:00:00Z",
+          "successors": [
+            "6b79c57e6a095239282c04818e96112f3f03a4001ba97a564c23852a3f1ea5fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 31536000,
+          "defaultDurationSeconds": 15552000,
+          "signedBy": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "signatures": [
+            {
+              "pubkey": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+              "sig": "859faf68be22ec066cbd3c5418ccaaa7d67681f92178f525080ffd424ea4e7d01f95fa14effbbb76fc20b0ebe2c9c1c0f9de9db189fb29d76a0527e02eac1306"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [],
+    "caEndorsements": [
+      {
+        "kind": "CaEndorsement",
+        "version": 1,
+        "endorsementId": "ca-e1",
+        "track": "ca",
+        "caPubkey": "abababababababababababababababababababababababababababababababab",
+        "scope": "flagship/directory-attestation",
+        "notBefore": "2026-03-01T00:00:00Z",
+        "notAfter": "2026-03-08T00:00:00Z",
+        "issuedAt": "2026-03-01T00:00:00Z",
+        "signedBy": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+        "signatures": [
+          {
+            "pubkey": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+            "sig": "3d28b9a79fedd592876cf258da445941dd0320e95d9ee463a14556074dec833256ecaa1177ba189467b179b7116a0e89f48d9785c34c7440741263be6a0d8a0a"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "lease-expired",
+    "subject": "ca-endorsement",
+    "track": "ca"
+  }
+}

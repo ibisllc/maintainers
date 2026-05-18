@@ -7,3 +7,4 @@ export * from "./endorsement.js";
 export * from "./caEndorsement.js";
 export * from "./storage.js";
 export * from "./encryptedBlobAdapter.js";
+export * from "./fetchClient.js";

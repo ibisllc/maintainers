@@ -1,0 +1,69 @@
+{
+  "name": "happy-release-endorsement-holder-signed",
+  "description": "A genesis ReleaseEndorsement signed by the v2 release-track holder, issuedAt inside the mandate window ⇒ accepted.",
+  "input": {
+    "pin": "6547cb04ab849514934c23fc506514e23e2c4e450c54431ad272c4db3b63777f",
+    "now": "2026-02-02T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-0000000000e0",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2027-01-01T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+            "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "8c7cb9661acf0bfe49f969e6758056a8296c368e7f2022e5988ac3ac35239c3cb191c45e00d7dd84856bc3f0ad470cfd41bbac80de08505f06dab00c3b473003"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [
+      {
+        "kind": "ReleaseEndorsement",
+        "version": 1,
+        "releaseId": "r1",
+        "semverTag": "v0.1.0",
+        "commitHash": "0101010101010101010101010101010101010101",
+        "previousReleaseId": null,
+        "previousCommitHash": null,
+        "intermediateCommits": [],
+        "intermediateMerkleRoot": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "endorsedNotes": null,
+        "issuedAt": "2026-02-01T00:00:00Z",
+        "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+        "signatures": [
+          {
+            "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+            "sig": "7c2e65a7e2326551d9fb47b42deea200f2a949b4d2bc6082201c91f46b0c52e65601c855808e2eff91a3a2976cd7ef932cfd8bb5187306cd5f494d11a4b3030c"
+          }
+        ]
+      }
+    ],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": true,
+    "rejectReason": null,
+    "subject": "release-endorsement",
+    "track": "release"
+  }
+}
