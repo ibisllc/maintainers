@@ -6,16 +6,16 @@
  */
 import { describe, expect, it } from "vitest";
 import { EncryptedBlobAdapter } from "../src/encryptedBlobAdapter.js";
-import type { Envelope, MandateV2 } from "../src/types.js";
+import type { Envelope, Mandate } from "../src/types.js";
 
 const SIXTY_FOUR_HEX = "0".repeat(64);
 // The adapter is envelope-agnostic at runtime (it persists raw bytes and
 // only takes the parsed envelope so an adapter MAY enforce per-envelope
-// policy). A MandateV2 is a representative `Envelope` member post-c4.5e
+// policy). A Mandate is a representative `Envelope` member post-c4.5e
 // (v1 removed); the test never inspects its fields.
-const ENV: Envelope = ((): MandateV2 => ({
+const ENV: Envelope = ((): Mandate => ({
   kind: "Mandate",
-  version: 2,
+  version: 1,
   mandateId: "550e8400-e29b-41d4-a716-446655440000",
   track: "release",
   holder: SIXTY_FOUR_HEX,

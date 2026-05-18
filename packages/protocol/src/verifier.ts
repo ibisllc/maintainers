@@ -27,9 +27,9 @@
  * never propagated. Fail-closed is a return value, not an exception.
  */
 
-import { canonicalMandateV2, mandatePinHash } from "./canonical.js";
+import { canonicalMandate, mandatePinHash } from "./canonical.js";
 import { verify } from "./crypto.js";
-import type { Iso8601, MandateV2, Pubkey } from "./types.js";
+import type { Iso8601, Mandate, Pubkey } from "./types.js";
 
 export type V2FailReason =
   | "envelope-shape-invalid"
@@ -54,30 +54,30 @@ export type V2RootFailReason =
   | "root-not-self-signed"; // signedBy ∉ signatures
 
 export interface V2Rejection {
-  mandate: MandateV2;
+  mandate: Mandate;
   reason: V2FailReason;
   detail?: string;
 }
 
-export interface VerifiedChainV2 {
+export interface VerifiedChain {
   /** the baked pin this chain was anchored at (echoed for the caller). */
   pin: string;
   /** the matched root mandate, or null if no chain could be anchored. */
-  root: MandateV2 | null;
+  root: Mandate | null;
   /** present iff `root` is null — why L1 fail-closed. */
   rootError?: V2RootFailReason;
   /** `[root, ...accepted forward suffix]`, oldest first. Empty when fail-closed. */
-  validMandates: MandateV2[];
+  validMandates: Mandate[];
   /** rejected forward mandates (recorded; they never become a predecessor). */
   rejections: V2Rejection[];
 }
 
-function isV2Shape(m: unknown): m is MandateV2 {
+function isMandateShape(m: unknown): m is Mandate {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
   return (
     x.kind === "Mandate" &&
-    x.version === 2 &&
+    x.version === 1 &&
     typeof x.mandateId === "string" &&
     typeof x.track === "string" &&
     typeof x.holder === "string" &&
@@ -94,15 +94,15 @@ function isV2Shape(m: unknown): m is MandateV2 {
 }
 
 /** Canonical bytes or null (never throws — adversarial fields ⇒ reject). */
-function canonicalOrNull(m: MandateV2): Uint8Array | null {
+function canonicalOrNull(m: Mandate): Uint8Array | null {
   try {
-    return canonicalMandateV2(m);
+    return canonicalMandate(m);
   } catch {
     return null;
   }
 }
 
-function pinHashOrNull(m: MandateV2): string | null {
+function pinHashOrNull(m: Mandate): string | null {
   try {
     return mandatePinHash(m);
   } catch {
@@ -118,7 +118,7 @@ function windowMs(issuedAt: Iso8601, expiresAt: Iso8601): number | null {
 }
 
 /** Every signature verifies over the mandate's canonical bytes? */
-function allSignaturesValid(m: MandateV2): boolean {
+function allSignaturesValid(m: Mandate): boolean {
   const bytes = canonicalOrNull(m);
   if (bytes === null) return false;
   if (m.signatures.length === 0) return false;
@@ -133,8 +133,8 @@ function allSignaturesValid(m: MandateV2): boolean {
  * Verify a single forward step K → K+1 against the predecessor's
  * embedded policy (the L3 ONE rule). Returns the fail reason or null.
  */
-function verifyForwardStep(pred: MandateV2, m: MandateV2): V2FailReason | null {
-  if (!isV2Shape(m)) return "envelope-shape-invalid";
+function verifyForwardStep(pred: Mandate, m: Mandate): V2FailReason | null {
+  if (!isMandateShape(m)) return "envelope-shape-invalid";
   if (m.track !== pred.track) return "wrong-track";
   const w = windowMs(m.issuedAt, m.expiresAt);
   if (w === null) return "envelope-shape-invalid";
@@ -183,13 +183,13 @@ function verifyForwardStep(pred: MandateV2, m: MandateV2): V2FailReason | null {
  * Fail-closed everywhere: an empty/absent pin, a pin that matches no
  * mandate (incl. a forked/tampered one — the hash binds the exact
  * canonical bytes), or a malformed root ⇒ `validMandates: []`, so
- * {@link currentAuthorityV2} yields null and the consumer rejects.
+ * {@link currentAuthority} yields null and the consumer rejects.
  */
 export function verifyMandateChainFromPin(
   pinnedHash: string,
-  mandates: MandateV2[],
-): VerifiedChainV2 {
-  const base: VerifiedChainV2 = {
+  mandates: Mandate[],
+): VerifiedChain {
+  const base: VerifiedChain = {
     pin: pinnedHash,
     root: null,
     validMandates: [],
@@ -204,7 +204,7 @@ export function verifyMandateChainFromPin(
   let rootIdx = -1;
   for (let i = 0; i < mandates.length; i++) {
     const m = mandates[i]!;
-    if (!isV2Shape(m)) continue;
+    if (!isMandateShape(m)) continue;
     if (pinHashOrNull(m) === pinnedHash) {
       rootIdx = i;
       break;
@@ -220,7 +220,7 @@ export function verifyMandateChainFromPin(
   // internally well-formed: a valid shape, a sane window, every
   // declared signature verifies, and signedBy is among them (so a
   // matched-by-hash root can't be a malformed blob).
-  if (!isV2Shape(root)) return { ...base, rootError: "root-shape-invalid" };
+  if (!isMandateShape(root)) return { ...base, rootError: "root-shape-invalid" };
   const rw = windowMs(root.issuedAt, root.expiresAt);
   if (rw === null) return { ...base, rootError: "root-shape-invalid" };
   if (rw <= 0) return { ...base, rootError: "root-expires-before-issuance" };
@@ -229,18 +229,18 @@ export function verifyMandateChainFromPin(
     return { ...base, rootError: "root-not-self-signed" };
   }
 
-  const accepted: MandateV2[] = [root];
+  const accepted: Mandate[] = [root];
   const rejections: V2Rejection[] = [];
   const seenIds = new Set<string>([root.mandateId]);
 
   for (let i = rootIdx + 1; i < mandates.length; i++) {
     const m = mandates[i]!;
-    if (!isV2Shape(m) || m.track !== root.track) {
+    if (!isMandateShape(m) || m.track !== root.track) {
       // not part of this track's forward chain — silently skip
       // (cross-track interleave is legitimate). A malformed object
       // claiming this track is caught by verifyForwardStep below.
-      if (isV2Shape(m) && m.track !== root.track) continue;
-      if (!isV2Shape(m)) continue;
+      if (isMandateShape(m) && m.track !== root.track) continue;
+      if (!isMandateShape(m)) continue;
     }
     if (seenIds.has(m.mandateId)) {
       rejections.push({ mandate: m, reason: "duplicate-mandate-id" });
@@ -266,10 +266,10 @@ export function verifyMandateChainFromPin(
  * operational semantics as v1's `currentAuthority`; only the chain it
  * runs over changed (verify-forward-from-pin instead of genesis-walk).
  */
-export function currentAuthorityV2(
-  chain: VerifiedChainV2,
+export function currentAuthority(
+  chain: VerifiedChain,
   now: Date,
-): { holder: Pubkey; mandate: MandateV2; successors: Pubkey[] } | null {
+): { holder: Pubkey; mandate: Mandate; successors: Pubkey[] } | null {
   const nowMs = now.getTime();
   for (let i = chain.validMandates.length - 1; i >= 0; i--) {
     const m = chain.validMandates[i]!;

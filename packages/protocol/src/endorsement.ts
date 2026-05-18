@@ -15,12 +15,12 @@
  *       ReleaseEndorsement / CaEndorsement)". So a ReleaseEndorsement is
  *       authorised iff `signedBy` equals the holder of the v2 mandate
  *       current at the endorsement's `issuedAt` ({@link
- *       currentAuthorityV2} over a {@link verifyMandateChainFromPin}
+ *       currentAuthority} over a {@link verifyMandateChainFromPin}
  *       chain). The succession quorum (`approvalRule`/`minSuccessors`/
  *       `maxDurationSeconds`) governs K→K+1 ONLY — never per-endorsement.
  *
  * Fail-closed everywhere: a chain anchored at an absent/forked pin has
- * `validMandates: []`, so `currentAuthorityV2` yields null and EVERY
+ * `validMandates: []`, so `currentAuthority` yields null and EVERY
  * endorsement is rejected `no-authority-at-issuance`.
  *
  * The git-history portion (each intermediate commit existing locally and
@@ -30,7 +30,7 @@
 
 import { canonicalReleaseEndorsement } from "./canonical.js";
 import { intermediateMerkleRoot, verify } from "./crypto.js";
-import { currentAuthorityV2, type VerifiedChainV2 } from "./verifierV2.js";
+import { currentAuthority, type VerifiedChain } from "./verifier.js";
 import type { ReleaseEndorsement } from "./types.js";
 
 /**
@@ -60,10 +60,10 @@ type SingleResult =
   | { ok: true }
   | { ok: false; reason: EndorsementFailReason; detail?: string };
 
-function verifySingleEndorsementV2(
+function verifySingleEndorsement(
   e: ReleaseEndorsement,
   prev: ReleaseEndorsement | undefined,
-  releaseChain: VerifiedChainV2,
+  releaseChain: VerifiedChain,
   seenIds: Set<string>,
 ): SingleResult {
   if (seenIds.has(e.releaseId)) {
@@ -126,7 +126,7 @@ function verifySingleEndorsementV2(
   }
 
   // v2 authority: the holder of the mandate current at e.issuedAt.
-  const authority = currentAuthorityV2(releaseChain, new Date(Date.parse(e.issuedAt)));
+  const authority = currentAuthority(releaseChain, new Date(Date.parse(e.issuedAt)));
   if (!authority) {
     return { ok: false, reason: "no-authority-at-issuance" };
   }
@@ -161,9 +161,9 @@ function verifySingleEndorsementV2(
  * Result shape is identical to v1 {@link verifyChainOfEndorsements} so
  * consumers swap the call with no downstream change.
  */
-export function verifyChainOfEndorsementsV2(
+export function verifyChainOfEndorsements(
   endorsements: ReleaseEndorsement[],
-  releaseChain: VerifiedChainV2,
+  releaseChain: VerifiedChain,
 ): VerifiedEndorsements {
   const seenIds = new Set<string>();
   const valid: ReleaseEndorsement[] = [];
@@ -172,7 +172,7 @@ export function verifyChainOfEndorsementsV2(
   for (let i = 0; i < endorsements.length; i++) {
     const e = endorsements[i]!;
     const prev = valid[valid.length - 1];
-    const result = verifySingleEndorsementV2(e, prev, releaseChain, seenIds);
+    const result = verifySingleEndorsement(e, prev, releaseChain, seenIds);
     if (result.ok) {
       valid.push(e);
       seenIds.add(e.releaseId);

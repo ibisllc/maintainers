@@ -15,7 +15,7 @@
  * authority path moved to v2). This command only needs to confirm a v2
  * mandate chain EXISTS on the track before signing; the cryptographic
  * holder-signs authority check is the verifier's
- * (`verifyChainOfEndorsementsV2`), judged forward-from-pin downstream.
+ * (`verifyChainOfEndorsements`), judged forward-from-pin downstream.
  */
 
 import {
@@ -33,7 +33,7 @@ import {
   type PivPinProvider,
   type SignerOptions,
 } from "../lib/keysource.js";
-import { readMandatesV2, writeEndorsement } from "../lib/store.js";
+import { readMandates, writeEndorsement } from "../lib/store.js";
 import { newUuid } from "../lib/uuid.js";
 
 export interface EndorsementOptions {
@@ -57,7 +57,7 @@ export interface EndorsementOptions {
 export async function buildEndorsement(
   opts: EndorsementOptions,
 ): Promise<ReleaseEndorsement> {
-  const trackMandates = readMandatesV2(opts.rootDir, opts.track);
+  const trackMandates = readMandates(opts.rootDir, opts.track);
   if (trackMandates.length === 0) {
     throw new CliError(
       `no v2 mandates found on track "${opts.track}"; bootstrap with ` +

@@ -279,7 +279,7 @@ function isPivSource(source: string): boolean {
 /**
  * Resolve a signing source into an {@link Ed25519Signer}. The single
  * entry point both the local-hex and YubiKey-PIV paths funnel through —
- * one signature-collection path (with `signMandateV2With` et al.).
+ * one signature-collection path (with `signMandateWith` et al.).
  *
  *   file:<path>            local hex key  -> privKeySigner (fallback)
  *   yubikey-piv:slot=9c    PIV-resident   -> token-backed signer

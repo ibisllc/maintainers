@@ -52,7 +52,7 @@ import {
   previewConfirmSign,
   signAssembled,
 } from "../lib/ceremony.js";
-import { readMandatesV2, writeCaEndorsement, caEndorsementFilename } from "../lib/store.js";
+import { readMandates, writeCaEndorsement, caEndorsementFilename } from "../lib/store.js";
 
 export const DEFAULT_CA_SCOPE = "flagship/directory-attestation";
 export const DEFAULT_CA_TRACK = "ca";
@@ -171,7 +171,7 @@ export interface CaEndorsementCmdEnv {
  */
 function onDiskCaAuthority(rootDir: string, track: string): Set<string> {
   const out = new Set<string>();
-  for (const m of readMandatesV2(rootDir, track)) {
+  for (const m of readMandates(rootDir, track)) {
     if (typeof m.holder === "string") out.add(m.holder);
     for (const s of m.successors ?? []) out.add(s);
   }

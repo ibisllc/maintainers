@@ -34,10 +34,10 @@ describe("envelopes (status/preview helpers)", () => {
   });
 
   it("serializeEnvelope round-trips through JSON.parse", () => {
-    const bytes = serializeEnvelope({ kind: "Mandate", version: 2, mandateId: "m1" });
+    const bytes = serializeEnvelope({ kind: "Mandate", version: 1, mandateId: "m1" });
     const parsed = JSON.parse(new TextDecoder().decode(bytes));
     expect(parsed.kind).toBe("Mandate");
-    expect(parsed.version).toBe(2);
+    expect(parsed.version).toBe(1);
     // pretty-printed + trailing newline
     expect(new TextDecoder().decode(bytes).endsWith("}\n")).toBe(true);
   });

@@ -8,9 +8,9 @@
  * (`approvalRule` / `successors` / `minSuccessors` /
  * `maxDurationSeconds`), and project metadata rides the inline
  * `project` field of a from-scratch (root) mandate. A track is just
- * `.maintainers/tracks/<track>/mandates/*.json`, each a version-2
- * Mandate; a v1 Mandate file is treated as malformed and ignored
- * (never parsed onto the v2 path).
+ * `.maintainers/tracks/<track>/mandates/*.json`, each a version-1
+ * Mandate; any other-version (or other-shape) file is treated as
+ * malformed and ignored (never parsed onto the trust path).
  *
  * NOTE: Repo providers (github, codeberg, gitea, gitlab) do not expose
  * a uniform "list files in a directory" API on raw content. We
@@ -34,7 +34,7 @@
  */
 import type {
   KeyFile,
-  MandateV2,
+  Mandate,
   ReleaseEndorsement,
 } from "@maintainers/protocol";
 import type { RepoLocation } from "./repo-detect.js";
@@ -51,8 +51,8 @@ export interface FetcherDeps {
 }
 
 export interface MaintainersData {
-  /** v2 mandates per track, version-2-filtered, sorted by issuedAt ascending. */
-  mandates: Record<string, MandateV2[]>;
+  /** mandates per track, version-1-filtered, sorted by issuedAt ascending. */
+  mandates: Record<string, Mandate[]>;
   keys: KeyFile[];
   endorsements: ReleaseEndorsement[];
   /** Branch we successfully fetched index.json from. */
@@ -149,12 +149,12 @@ export async function fetchFresh(
     };
   }
 
-  // Mandates per track. v2-only: a Mandate file MUST be a well-formed
-  // version-2 Mandate; a v1 Mandate (or any other shape) is recorded as
-  // an error and dropped — it never reaches the v2 verifier.
-  const mandates: Record<string, MandateV2[]> = {};
+  // Mandates per track: a Mandate file MUST be a well-formed
+  // version-1 Mandate; any other version or shape is recorded as
+  // an error and dropped — it never reaches the verifier.
+  const mandates: Record<string, Mandate[]> = {};
   for (const [track, mandatePaths] of Object.entries(index.tracks)) {
-    const trackMandates: MandateV2[] = [];
+    const trackMandates: Mandate[] = [];
     for (const p of mandatePaths) {
       const r = await fetchJson<unknown>(repo.rawUrl(p, usedBranch), deps);
       if (!r.ok) {
@@ -162,10 +162,10 @@ export async function fetchFresh(
         continue;
       }
       const v = r.value as { kind?: unknown; version?: unknown };
-      if (v && typeof v === "object" && v.kind === "Mandate" && v.version === 2) {
-        trackMandates.push(r.value as MandateV2);
+      if (v && typeof v === "object" && v.kind === "Mandate" && v.version === 1) {
+        trackMandates.push(r.value as Mandate);
       } else {
-        errors.push({ path: p, error: "not a version-2 Mandate" });
+        errors.push({ path: p, error: "not a version-1 Mandate" });
       }
     }
     // Canonical log order: issuedAt ascending. issuedAt is in the

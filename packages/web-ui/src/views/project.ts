@@ -12,16 +12,16 @@
  * first on-repo mandate (the read-only-preview anchor — the web UI has
  * no baked pin; a real consumer bakes `mandatePinHash` of a chosen
  * mandate, see the v2 security boundary) via `verifyMandateChainFromPin`
- * + `currentAuthorityV2`. There is no policy.json / rootPolicy /
+ * + `currentAuthority`. There is no policy.json / rootPolicy /
  * TrackPolicy: the succession rule is inline in each mandate.
  */
 
 import {
-  currentAuthorityV2,
+  currentAuthority,
   mandatePinHash,
   verifyMandateChainFromPin,
-  type MandateV2,
-  type VerifiedChainV2,
+  type Mandate,
+  type VerifiedChain,
 } from "@maintainers/protocol";
 import { daysFromNow, el, mount, relativeTime, shortHex } from "../dom.js";
 import { lookupHolder, type ParsedFolder, type ParsedTrack } from "../parse-folder.js";
@@ -100,7 +100,7 @@ function projectName(folder: ParsedFolder): string | null {
 }
 
 /** Forward-verify a track anchored at its first on-repo mandate. */
-function verifyTrackChain(track: ParsedTrack): VerifiedChainV2 | null {
+function verifyTrackChain(track: ParsedTrack): VerifiedChain | null {
   if (track.mandates.length === 0) return null;
   return verifyMandateChainFromPin(mandatePinHash(track.mandates[0]!), track.mandates);
 }
@@ -145,12 +145,12 @@ function renderTrackHealth(
       el("div.alert.warn", null, "No mandates on this track yet."),
     );
   }
-  const auth = currentAuthorityV2(chain, now);
+  const auth = currentAuthority(chain, now);
   // v2 has no holder-in-window vs after-expiry split — the last valid
   // mandate is simply the most recent succession; if its window has
   // elapsed, its named `successors` are who may continue (informational
   // for this read-only view).
-  const last: MandateV2 | undefined = chain.validMandates[chain.validMandates.length - 1];
+  const last: Mandate | undefined = chain.validMandates[chain.validMandates.length - 1];
   const expired = !auth ? last ?? null : null;
   const head = el(
     "div.row",
@@ -401,7 +401,7 @@ function renderActivity(folder: ParsedFolder, now: Date): HTMLElement {
 }
 
 /** Exported for tests: forward-verify a track's v2 mandate log. */
-export function _verifyChainForTest(mandates: MandateV2[]): VerifiedChainV2 {
+export function _verifyChainForTest(mandates: Mandate[]): VerifiedChain {
   return verifyMandateChainFromPin(
     mandates.length > 0 ? mandatePinHash(mandates[0]!) : "",
     mandates,

@@ -12,20 +12,20 @@
  *       IS the operational authority that signs CaEndorsements. A
  *       CaEndorsement is authorised iff `signedBy` equals the holder of
  *       the v2 ca-track mandate current at `now` ({@link
- *       currentAuthorityV2} over a {@link verifyMandateChainFromPin}
+ *       currentAuthority} over a {@link verifyMandateChainFromPin}
  *       chain). D3 (freshness) is unchanged: the lease window judged at
  *       NOW + the authority judged at NOW together bound a leaked hot key
  *       to one window and kill it by simply withholding the next lease.
  *
  * Fail-closed: a chain anchored at an absent/forked pin yields no
  * authority at now ⇒ every lease is rejected `no-ca-authority-at-now` ⇒
- * `authorizedCaKeysV2` is `[]` ⇒ the #30 chokepoint rejects all CA
+ * `authorizedCaKeys` is `[]` ⇒ the #30 chokepoint rejects all CA
  * artifacts. Never a fall-back to a previously-seen key.
  */
 
 import { canonicalCaEndorsement } from "./canonical.js";
 import { verify } from "./crypto.js";
-import { currentAuthorityV2, type VerifiedChainV2 } from "./verifierV2.js";
+import { currentAuthority, type VerifiedChain } from "./verifier.js";
 import type { CaEndorsement, Pubkey } from "./types.js";
 
 /**
@@ -67,9 +67,9 @@ type OneResult =
   | { ok: true }
   | { ok: false; reason: CaEndorsementFailReason; detail?: string };
 
-function verifyOneV2(
+function verifyOne(
   e: CaEndorsement,
-  caChain: VerifiedChainV2,
+  caChain: VerifiedChain,
   now: Date,
   skewMs: number,
 ): OneResult {
@@ -105,7 +105,7 @@ function verifyOneV2(
 
   // THE deviation, v2: authority at `now` (never at e.issuedAt), taken
   // from the verify-forward-from-pin chain.
-  const authority = currentAuthorityV2(caChain, now);
+  const authority = currentAuthority(caChain, now);
   if (!authority) return { ok: false, reason: "no-ca-authority-at-now" };
 
   const signerPubkeys = new Set(e.signatures.map((s) => s.pubkey));
@@ -131,9 +131,9 @@ function verifyOneV2(
  * `now`. Order does not matter (no chain); each is judged independently.
  * Result shape identical to v1 {@link verifyCaEndorsements}.
  */
-export function verifyCaEndorsementsV2(
+export function verifyCaEndorsements(
   endorsements: CaEndorsement[],
-  caChain: VerifiedChainV2,
+  caChain: VerifiedChain,
   now: Date,
   opts: { clockSkewMs?: number } = {},
 ): VerifiedCaEndorsements {
@@ -142,7 +142,7 @@ export function verifyCaEndorsementsV2(
   const rejections: VerifiedCaEndorsements["rejections"] = [];
 
   for (const e of endorsements) {
-    const r = verifyOneV2(e, caChain, now, skewMs);
+    const r = verifyOne(e, caChain, now, skewMs);
     if (r.ok) validEndorsements.push(e);
     else rejections.push({ endorsement: e, reason: r.reason, detail: r.detail });
   }
@@ -167,13 +167,13 @@ export function verifyCaEndorsementsV2(
  * CA-signed artifacts under. Empty array ⇒ fail closed (reject all).
  * Deduped, insertion order preserved.
  */
-export function authorizedCaKeysV2(
+export function authorizedCaKeys(
   endorsements: CaEndorsement[],
-  caChain: VerifiedChainV2,
+  caChain: VerifiedChain,
   now: Date,
   opts: { clockSkewMs?: number } = {},
 ): Pubkey[] {
-  const { validEndorsements } = verifyCaEndorsementsV2(endorsements, caChain, now, opts);
+  const { validEndorsements } = verifyCaEndorsements(endorsements, caChain, now, opts);
   const seen = new Set<Pubkey>();
   const out: Pubkey[] = [];
   for (const e of validEndorsements) {

@@ -6,7 +6,7 @@
  * counting the PUT calls and inspecting their bodies. The ZIP fallback
  * is checked by snapshotting the magic bytes of the returned Blob.
  *
- * v2: there is NO policy.json — folders are version-2 mandates under
+ * v2: there is NO policy.json — folders are version-1 mandates under
  * `tracks/<track>/mandates/*.json` + keyfiles under `keys/`.
  *
  * No real network. No real WebAuthn. No DOM.
@@ -20,11 +20,11 @@ import {
   type UiEnvelope,
 } from "../src/adapter.js";
 import { pathForKeyFile, pathForMandate, serializeEnvelope } from "../src/envelopes.js";
-import { kp, mkKeyFile, mkV2 } from "./v2-fixtures.js";
+import { kp, mkKeyFile, mk } from "./fixtures.js";
 
 function rootBundle(): { path: string; envelope: UiEnvelope; bytes: Uint8Array }[] {
   const alice = kp(1);
-  const mandate = mkV2({
+  const mandate = mk({
     id: "root-0000-0000-0000-000000000001",
     holder: alice.pubKey,
     issuedAt: "2026-05-11T00:00:00Z",
@@ -57,7 +57,7 @@ function rootBundle(): { path: string; envelope: UiEnvelope; bytes: Uint8Array }
 describe("staticAdapter loadProject (v2)", () => {
   it("fetches raw mandate URLs from the github provider", async () => {
     const alice = kp(1);
-    const mandate = mkV2({
+    const mandate = mk({
       id: "g-0000-0000-0000-000000000001",
       holder: alice.pubKey,
       issuedAt: "2026-05-11T00:00:00Z",
@@ -205,7 +205,7 @@ describe("serverAdapter contract (v2)", () => {
 
   it("loadProject calls the right endpoint and decodes base64 v2 mandate files", async () => {
     const alice = kp(2);
-    const mandate = mkV2({
+    const mandate = mk({
       id: "srv-0000-0000-0000-000000000001",
       holder: alice.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",

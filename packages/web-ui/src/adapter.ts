@@ -19,7 +19,7 @@ import type {
   KeyFile,
   KeyIntroductionRequest,
   KeyRedirect,
-  MandateV2,
+  Mandate,
   ReleaseEndorsement,
 } from "@maintainers/protocol";
 import {
@@ -40,12 +40,12 @@ import { buildZip } from "./zip.js";
  * The adapter's envelope union. Deliberately NOT the protocol
  * `Envelope` (which still carries the v1 `Mandate` member until
  * c4.5e): web-ui is v2-only, so a Mandate here is always a
- * `MandateV2`. Mirrors the cloudflare-worker `WorkerEnvelope` shape
+ * `Mandate`. Mirrors the cloudflare-worker `WorkerEnvelope` shape
  * (c4.5a) so both consumers are off the v1 path while v1 still
  * coexists in protocol.
  */
 export type UiEnvelope =
-  | MandateV2
+  | Mandate
   | KeyFile
   | KeyRedirect
   | EmailRotation

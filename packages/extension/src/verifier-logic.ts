@@ -21,16 +21,16 @@
  * rotation, chain gap, expiring-soon).
  */
 import {
-  currentAuthorityV2,
+  currentAuthority,
   mandatePinHash,
-  verifyChainOfEndorsementsV2,
+  verifyChainOfEndorsements,
   verifyMandateChainFromPin,
   type KeyFile,
-  type MandateV2,
+  type Mandate,
   type Pubkey,
   type ReleaseEndorsement,
   type TakeoverAlarm,
-  type VerifiedChainV2,
+  type VerifiedChain,
 } from "@maintainers/protocol";
 
 export type AlarmLevel = "red" | "yellow" | "info";
@@ -56,7 +56,7 @@ export interface PersonCard {
 
 export interface TrackView {
   track: string;
-  current: { holder: PersonCard; mandate: MandateV2; expiresAt: string; expiresInMs: number } | null;
+  current: { holder: PersonCard; mandate: Mandate; expiresAt: string; expiresInMs: number } | null;
   successors: PersonCard[];
   /**
    * v2 has no holder-in-window-vs-after-expiry split. When there is no
@@ -64,9 +64,9 @@ export interface TrackView {
    * has elapsed); its `successors` are who may continue the track.
    * Informational for this read-only view.
    */
-  lastExpired: MandateV2 | null;
-  recentMandates: MandateV2[];
-  rejections: VerifiedChainV2["rejections"];
+  lastExpired: Mandate | null;
+  recentMandates: Mandate[];
+  rejections: VerifiedChain["rejections"];
 }
 
 export interface OverlayState {
@@ -75,7 +75,7 @@ export interface OverlayState {
   policyPresent: boolean;
   tracks: TrackView[];
   recentEndorsements: ReleaseEndorsement[];
-  endorsementRejections: ReturnType<typeof verifyChainOfEndorsementsV2>["rejections"];
+  endorsementRejections: ReturnType<typeof verifyChainOfEndorsements>["rejections"];
   alarms: Alarm[];
   computedAt: number;
 }
@@ -86,12 +86,12 @@ const EXPIRY_SOON_MS = 7 * 24 * 60 * 60 * 1000;
  * Forward-verify a track anchored at its first on-repo mandate. An
  * empty log ⇒ empty-pin ⇒ `rootError:"no-pin"` ⇒ fail-closed.
  */
-function verifyTrackChain(mandates: MandateV2[]): VerifiedChainV2 {
+function verifyTrackChain(mandates: Mandate[]): VerifiedChain {
   const pin = mandates.length > 0 ? safePinHash(mandates[0]!) : "";
   return verifyMandateChainFromPin(pin, mandates);
 }
 
-function safePinHash(m: MandateV2): string {
+function safePinHash(m: Mandate): string {
   try {
     return mandatePinHash(m);
   } catch {
@@ -102,7 +102,7 @@ function safePinHash(m: MandateV2): string {
 }
 
 export function computeOverlayState(input: {
-  mandates: Record<string, MandateV2[]>;
+  mandates: Record<string, Mandate[]>;
   keys: KeyFile[];
   endorsements: ReleaseEndorsement[];
   now: Date;
@@ -123,7 +123,7 @@ export function computeOverlayState(input: {
 
   for (const trackName of trackNames) {
     const trackMandates = mandates[trackName] ?? [];
-    let chain: VerifiedChainV2;
+    let chain: VerifiedChain;
     try {
       chain = verifyTrackChain(trackMandates);
     } catch (err) {
@@ -170,8 +170,8 @@ export function computeOverlayState(input: {
       projectName = chain.root.project.name;
     }
 
-    const auth = currentAuthorityV2(chain, now);
-    const last: MandateV2 | null =
+    const auth = currentAuthority(chain, now);
+    const last: Mandate | null =
       chain.validMandates[chain.validMandates.length - 1] ?? null;
     const expired = !auth ? last : null;
 
@@ -256,12 +256,12 @@ export function computeOverlayState(input: {
 
   // Endorsements chain (release track if it has a valid chain).
   const releaseMandates = mandates["release"] ?? [];
-  let endorsementRejections: ReturnType<typeof verifyChainOfEndorsementsV2>["rejections"] = [];
+  let endorsementRejections: ReturnType<typeof verifyChainOfEndorsements>["rejections"] = [];
   let recentEndorsements: ReleaseEndorsement[] = [];
   const policyPresent = tracks.some((t) => t.current !== null || t.lastExpired !== null);
   if (releaseMandates.length > 0 && endorsements.length > 0) {
     const releaseChain = verifyTrackChain(releaseMandates);
-    const chain = verifyChainOfEndorsementsV2(endorsements, releaseChain);
+    const chain = verifyChainOfEndorsements(endorsements, releaseChain);
     endorsementRejections = chain.rejections;
     recentEndorsements = chain.validEndorsements.slice(-5).reverse();
     for (const rej of chain.rejections) {
@@ -313,7 +313,7 @@ function personFromKey(pubkey: Pubkey, keyByPubkey: Map<Pubkey, KeyFile>): Perso
  * Returns the synthetic TakeoverAlarm (NOT signed) for UI display.
  */
 function detectTakeover(
-  validMandates: MandateV2[],
+  validMandates: Mandate[],
   keyByPubkey: Map<Pubkey, KeyFile>,
 ): TakeoverAlarm | null {
   for (let i = validMandates.length - 1; i >= 1; i--) {
@@ -358,6 +358,6 @@ export function formatDuration(ms: number): string {
 }
 
 /** Exported for tests: forward-verify a track's v2 mandate log. */
-export function _verifyChainForTest(mandates: MandateV2[]): VerifiedChainV2 {
+export function _verifyChainForTest(mandates: Mandate[]): VerifiedChain {
   return verifyTrackChain(mandates);
 }

@@ -7,10 +7,10 @@
  *
  * **LOCKED Phase-2 v2 model.** Each track is verified FORWARD from a
  * pinned mandate (`verifyMandateChainFromPin`); succession policy is
- * INLINE in each `MandateV2` (no `policy.json`); endorsements verify
+ * INLINE in each `Mandate` (no `policy.json`); endorsements verify
  * holder-signs against the v2 release chain. There is no
  * holder-in-window vs after-expiry split — "expired" is simply
- * `currentAuthorityV2 === null`.
+ * `currentAuthority === null`.
  *
  * **No baked pin (the c4.5a/b/c preview pattern).** The CLI verifies an
  * arbitrary on-disk `.maintainers/` folder with NO compiled-in
@@ -24,12 +24,12 @@
  */
 
 import {
-  currentAuthorityV2,
+  currentAuthority,
   mandatePinHash,
-  verifyChainOfEndorsementsV2,
+  verifyChainOfEndorsements,
   verifyMandateChainFromPin,
-  type MandateV2,
-  type VerifiedChainV2,
+  type Mandate,
+  type VerifiedChain,
   type VerifiedEndorsements,
 } from "@maintainers/protocol";
 import { CliError, type ParsedArgs, optionalFlag } from "../lib/args.js";
@@ -70,12 +70,12 @@ export interface TrackReport {
  * Forward-verify a track anchored at its first on-repo mandate. An
  * empty log ⇒ empty pin ⇒ `rootError:"no-pin"` ⇒ fail-closed.
  */
-function verifyTrackChain(mandates: MandateV2[]): VerifiedChainV2 {
+function verifyTrackChain(mandates: Mandate[]): VerifiedChain {
   const pin = mandates.length > 0 ? safePinHash(mandates[0]!) : "";
   return verifyMandateChainFromPin(pin, mandates);
 }
 
-function safePinHash(m: MandateV2): string {
+function safePinHash(m: Mandate): string {
   try {
     return mandatePinHash(m);
   } catch {
@@ -93,7 +93,7 @@ export function buildReport(rootDir: string, now: Date): VerifyReport {
   let endorsementsRejected = 0;
   const endorsementErrors: VerifyReport["endorsementErrors"] = [];
 
-  const verifiedTracks = new Map<string, VerifiedChainV2>();
+  const verifiedTracks = new Map<string, VerifiedChain>();
 
   for (const [name, mandates] of store.mandatesByTrack.entries()) {
     const chain = verifyTrackChain(mandates);
@@ -120,8 +120,8 @@ export function buildReport(rootDir: string, now: Date): VerifyReport {
       continue;
     }
 
-    const auth = currentAuthorityV2(chain, now);
-    const last: MandateV2 | null =
+    const auth = currentAuthority(chain, now);
+    const last: Mandate | null =
       chain.validMandates[chain.validMandates.length - 1] ?? null;
     const expired = !auth ? last : null;
     tracks.push({
@@ -157,7 +157,7 @@ export function buildReport(rootDir: string, now: Date): VerifyReport {
         });
       }
     } else {
-      const result: VerifiedEndorsements = verifyChainOfEndorsementsV2(
+      const result: VerifiedEndorsements = verifyChainOfEndorsements(
         store.endorsements,
         releaseChain,
       );

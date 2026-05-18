@@ -5,7 +5,7 @@
  *
  * **LOCKED Phase-2 v2 model.** There is NO policy.json (root or track):
  * the succession rule is folded into each mandate. A track is just
- * `tracks/<track>/mandates/*.json`, each a version-2 Mandate. This
+ * `tracks/<track>/mandates/*.json`, each a version-1 Mandate. This
  * module is intentionally tolerant: it surfaces parse errors per file
  * rather than throwing, so a single malformed envelope doesn't blank
  * the whole UI. The verifier (in @maintainers/protocol) is the
@@ -16,7 +16,7 @@
 import type {
   KeyFile,
   KeyRedirect,
-  MandateV2,
+  Mandate,
   ReleaseEndorsement,
 } from "@maintainers/protocol";
 
@@ -27,8 +27,8 @@ export interface RawFolder {
 
 export interface ParsedTrack {
   name: string;
-  /** Track mandates, version-2-filtered, sorted by issuedAt ascending. */
-  mandates: MandateV2[];
+  /** Track mandates, version-1-filtered, sorted by issuedAt ascending. */
+  mandates: Mandate[];
   /** Files we tried to parse as v2 mandates but couldn't. */
   malformedMandates: ParseError[];
 }
@@ -64,7 +64,7 @@ export interface ParseError {
 const DECODER = new TextDecoder("utf-8");
 
 export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
-  const trackMap = new Map<string, { mandates: MandateV2[]; malformed: ParseError[] }>();
+  const trackMap = new Map<string, { mandates: Mandate[]; malformed: ParseError[] }>();
   const keyMap = new Map<string, ParsedKey>();
   const endorsements: ReleaseEndorsement[] = [];
   const malformedEndorsements: ParseError[] = [];
@@ -104,11 +104,11 @@ export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
         if (
           v &&
           (v as { kind?: string }).kind === "Mandate" &&
-          (v as { version?: number }).version === 2
+          (v as { version?: number }).version === 1
         ) {
-          entry.mandates.push(v as MandateV2);
+          entry.mandates.push(v as Mandate);
         } else if (v && (v as { kind?: string }).kind === "Mandate") {
-          entry.malformed.push({ path, reason: "not a version-2 Mandate" });
+          entry.malformed.push({ path, reason: "not a version-1 Mandate" });
         } else {
           entry.malformed.push({ path, reason: "not a Mandate envelope" });
         }
@@ -160,9 +160,9 @@ export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
 }
 
 function ensureTrack(
-  map: Map<string, { mandates: MandateV2[]; malformed: ParseError[] }>,
+  map: Map<string, { mandates: Mandate[]; malformed: ParseError[] }>,
   name: string,
-): { mandates: MandateV2[]; malformed: ParseError[] } {
+): { mandates: Mandate[]; malformed: ParseError[] } {
   let entry = map.get(name);
   if (!entry) {
     entry = { mandates: [], malformed: [] };

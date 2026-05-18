@@ -21,17 +21,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   canonicalReleaseEndorsement,
-  currentAuthorityV2,
+  currentAuthority,
   generateKeypair,
   intermediateMerkleRoot,
   mandatePinHash,
-  signMandateV2,
+  signMandate,
   verify,
   verifyMandateChainFromPin,
-  type MandateV2,
+  type Mandate,
 } from "@maintainers/protocol";
 import { buildEndorsement } from "../src/commands/endorsement.js";
-import { writeMandateV2 } from "../src/lib/store.js";
+import { writeMandate } from "../src/lib/store.js";
 
 function keypair(seedByte: number) {
   const seed = new Uint8Array(32);
@@ -57,15 +57,15 @@ const alice = keypair(1);
 const bob = keypair(2);
 const eve = keypair(3);
 
-/** A from-scratch (root) release `MandateV2`, self-signed by `holder`. */
+/** A from-scratch (root) release `Mandate`, self-signed by `holder`. */
 function root(
   holder: { pubKey: string; privKey: string },
   successors: string[],
   o: { id?: string; threshold?: number } = {},
-): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: o.id ?? "rel-root-0000-4000-8000-000000000000",
     track: "release",
     holder: holder.pubKey,
@@ -79,7 +79,7 @@ function root(
     project: { name: "flagship", contact: "harry@flagship.services", tracks: ["release"] },
     signedBy: holder.pubKey,
   };
-  return signMandateV2(unsigned, [{ privKey: holder.privKey }]);
+  return signMandate(unsigned, [{ privKey: holder.privKey }]);
 }
 
 /** A succession mandate signed by `signer` (must be a named successor of
@@ -89,10 +89,10 @@ function next(
   holder: { pubKey: string },
   successors: string[],
   o: { id?: string; issuedAt?: string } = {},
-): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: o.id ?? "rel-next-0000-4000-8000-000000000001",
     track: "release",
     holder: holder.pubKey,
@@ -105,7 +105,7 @@ function next(
     defaultDurationSeconds: 60 * 86_400,
     signedBy: signer.pubKey,
   };
-  return signMandateV2(unsigned, [{ privKey: signer.privKey }]);
+  return signMandate(unsigned, [{ privKey: signer.privKey }]);
 }
 
 describe("v2 forward verify — happy path", () => {
@@ -118,7 +118,7 @@ describe("v2 forward verify — happy path", () => {
       r.mandateId,
       renewal.mandateId,
     ]);
-    const auth = currentAuthorityV2(chain, new Date("2026-03-01T00:00:00Z"));
+    const auth = currentAuthority(chain, new Date("2026-03-01T00:00:00Z"));
     expect(auth?.holder).toBe(alice.pubKey);
   });
 
@@ -138,7 +138,7 @@ describe("v2 verify-path fail-closed negatives (the mandated set)", () => {
     const chain = verifyMandateChainFromPin("", [r]);
     expect(chain.rootError).toBe("no-pin");
     expect(chain.validMandates).toHaveLength(0);
-    expect(currentAuthorityV2(chain, new Date("2026-03-01T00:00:00Z"))).toBeNull();
+    expect(currentAuthority(chain, new Date("2026-03-01T00:00:00Z"))).toBeNull();
   });
 
   it("a forked/tampered pin ⇒ pin-not-in-log ⇒ reject all", () => {
@@ -160,7 +160,7 @@ describe("v2 verify-path fail-closed negatives (the mandated set)", () => {
     expect(chain.rejections[0]!.reason).toBe("signer-not-in-successor-set");
     // and no live authority after the (rejected) usurpation window
     expect(
-      currentAuthorityV2(chain, new Date("2027-01-01T00:00:00Z")),
+      currentAuthority(chain, new Date("2027-01-01T00:00:00Z")),
     ).toBeNull();
   });
 });
@@ -170,7 +170,7 @@ describe("buildEndorsement (still a v1 ReleaseEndorsement; v2 chain underneath)"
     const tmp = mkTmp("maintainers-cli-endorsement-");
     // a v2 release root on disk so the "bootstrap with upsert-mandate
     // first" guard is satisfied.
-    writeMandateV2(tmp, root(alice, [alice.pubKey]));
+    writeMandate(tmp, root(alice, [alice.pubKey]));
 
     const commit = "a".repeat(40);
     const e = await buildEndorsement({
@@ -200,7 +200,7 @@ describe("buildEndorsement (still a v1 ReleaseEndorsement; v2 chain underneath)"
 
   it("verifies inline csv intermediates produce a correct merkle root", async () => {
     const tmp = mkTmp("maintainers-cli-endorsement-csv-");
-    writeMandateV2(tmp, root(alice, [alice.pubKey]));
+    writeMandate(tmp, root(alice, [alice.pubKey]));
 
     const c1 = "1".repeat(40);
     const c2 = "2".repeat(40);
@@ -225,7 +225,7 @@ describe("buildEndorsement (still a v1 ReleaseEndorsement; v2 chain underneath)"
 
   it("rejects a non-hex commit hash", async () => {
     const tmp = mkTmp("maintainers-cli-endorsement-bad-");
-    writeMandateV2(tmp, root(alice, [alice.pubKey]));
+    writeMandate(tmp, root(alice, [alice.pubKey]));
 
     await expect(
       buildEndorsement({

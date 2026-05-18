@@ -5,20 +5,20 @@
  * tests are reproducible.
  *
  * v2: there is NO policy.json (root or per-track). The succession rule
- * is inline in each MandateV2; project metadata rides the inline
+ * is inline in each Mandate; project metadata rides the inline
  * `project` field of the from-scratch (root) mandate. A track is just
  * `.maintainers/tracks/<track>/mandates/*.json`, enumerated via
- * `.maintainers/index.json`. Mirrors the c4.5b web-ui `mkV2` helper.
+ * `.maintainers/index.json`. Mirrors the c4.5b web-ui `mk` helper.
  */
 import {
   generateKeypair,
   intermediateMerkleRoot,
   mandatePinHash,
   signKeyFile,
-  signMandateV2,
+  signMandate,
   signReleaseEndorsement,
   type KeyFile,
-  type MandateV2,
+  type Mandate,
   type ReleaseEndorsement,
 } from "@maintainers/protocol";
 
@@ -32,7 +32,7 @@ export interface Fixture {
   carol: { privKey: string; pubKey: string };
   /** First (root) release mandate's pin — the preview anchor. */
   releaseRootPin: string;
-  mandates: { release: MandateV2[]; ca: MandateV2[] };
+  mandates: { release: Mandate[]; ca: Mandate[] };
   keys: KeyFile[];
   endorsements: ReleaseEndorsement[];
 }
@@ -61,7 +61,7 @@ function kp(seedByte: number) {
   return generateKeypair(seed);
 }
 
-export interface MkV2 {
+export interface Mk {
   id: string;
   track?: string;
   holder: string;
@@ -76,10 +76,10 @@ export interface MkV2 {
   signWith: string[];
 }
 
-export function mkV2(o: MkV2): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+export function mk(o: Mk): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: o.id,
     track: o.track ?? "release",
     holder: o.holder,
@@ -93,7 +93,7 @@ export function mkV2(o: MkV2): MandateV2 {
     ...(o.project ? { project: o.project } : {}),
     signedBy: o.signedBy,
   };
-  return signMandateV2(unsigned, o.signWith.map((privKey) => ({ privKey })));
+  return signMandate(unsigned, o.signWith.map((privKey) => ({ privKey })));
 }
 
 export function buildFixture(opts: FixtureOptions): Fixture {
@@ -175,10 +175,10 @@ export function buildFixture(opts: FixtureOptions): Fixture {
 
   // Release mandates. The root (genesis) is self-signed by Alice and
   // carries the project metadata + the succession rule for K+1.
-  const releaseMandates: MandateV2[] = [];
+  const releaseMandates: Mandate[] = [];
   const genesisIssuedAt = new Date(now.getTime() - 90 * DAY).toISOString();
   const genesisExpiresAt = new Date(now.getTime() - 30 * DAY).toISOString();
-  const releaseRoot = mkV2({
+  const releaseRoot = mk({
     id: "11111111-1111-1111-1111-111111111111",
     track: "release",
     holder: alice.pubKey,
@@ -195,7 +195,7 @@ export function buildFixture(opts: FixtureOptions): Fixture {
   if (opts.takeover) {
     // Bob succeeds Alice (signedBy != prior holder ⇒ takeover alarm).
     releaseMandates.push(
-      mkV2({
+      mk({
         id: "22222222-2222-2222-2222-222222222222",
         track: "release",
         holder: bob.pubKey,
@@ -209,7 +209,7 @@ export function buildFixture(opts: FixtureOptions): Fixture {
   } else {
     // Alice rotates to herself (continuous; no takeover).
     releaseMandates.push(
-      mkV2({
+      mk({
         id: "22222222-2222-2222-2222-222222222222",
         track: "release",
         holder: alice.pubKey,
@@ -223,8 +223,8 @@ export function buildFixture(opts: FixtureOptions): Fixture {
   }
 
   // CA mandates — just Alice (active root, currently in-window).
-  const caMandates: MandateV2[] = [
-    mkV2({
+  const caMandates: Mandate[] = [
+    mk({
       id: "33333333-3333-3333-3333-333333333333",
       track: "ca",
       holder: alice.pubKey,

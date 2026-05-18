@@ -11,17 +11,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-  canonicalMandateV2,
+  canonicalMandate,
   mandatePinHash,
   verifyMandateChainFromPin,
-  currentAuthorityV2,
+  currentAuthority,
   generateKeypair,
 } from "@maintainers/protocol";
 import {
   assembleUpsertMandate,
   buildUpsertMandate,
 } from "../src/commands/upsertMandate.js";
-import { readMandatesV2, writeMandateV2 } from "../src/lib/store.js";
+import { readMandates, writeMandate } from "../src/lib/store.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
 import type { PivTransport } from "../src/lib/keysource.js";
@@ -121,7 +121,7 @@ async function seedRoot(
     io: { readFileSync: io },
     uuid: () => "root0000-0000-4000-8000-000000000000",
   });
-  writeMandateV2(root, m);
+  writeMandate(root, m);
   return m;
 }
 
@@ -155,10 +155,10 @@ describe("upsert-mandate — from-scratch ORIGIN", () => {
       expect(out).toContain("RECORD the PIN");
       expect(out).not.toContain(founder.privKey); // never logs secrets
 
-      const onDisk = readMandatesV2(root, "release");
+      const onDisk = readMandates(root, "release");
       expect(onDisk.length).toBe(1);
       const m = onDisk[0]!;
-      expect(m.version).toBe(2);
+      expect(m.version).toBe(1);
       expect(m.signedBy).toBe(founder.pubKey);
       expect(m.holder).toBe(founder.pubKey); // self-signed
       expect(m.successors).toEqual([founder.pubKey, backup.pubKey]);
@@ -180,7 +180,7 @@ describe("upsert-mandate — from-scratch ORIGIN", () => {
     }
   });
 
-  it("--dry-run prints exact canonicalMandateV2 bytes + the PIN, signs/writes nothing", async () => {
+  it("--dry-run prints exact canonicalMandate bytes + the PIN, signs/writes nothing", async () => {
     const { tmp, root } = tmpRoot("um-dry-");
     try {
       const lines: string[] = [];
@@ -220,7 +220,7 @@ describe("upsert-mandate — from-scratch ORIGIN", () => {
       const out = lines.join("\n");
       expect(out).toContain("DRY RUN — upsert-mandate");
       expect(out).toContain(hex(a.canonical));
-      expect(out).toContain(hex(canonicalMandateV2(a.unsigned)));
+      expect(out).toContain(hex(canonicalMandate(a.unsigned)));
       expect(out).not.toContain('"signatures"');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -292,12 +292,12 @@ describe("upsert-mandate — succession (the ONE mechanism)", () => {
       expect(code).toBe(0);
       expect(lines.join("\n")).toContain("holder is unchanged (a renewal)");
 
-      const log = readMandatesV2(root, "release");
+      const log = readMandates(root, "release");
       expect(log.map((m) => m.mandateId)).toEqual([r.mandateId, log[1]!.mandateId]);
       const chain = verifyMandateChainFromPin(mandatePinHash(r), log);
       expect(chain.validMandates.length).toBe(2);
       // at a time inside the renewal window → the renewal's holder
-      const auth = currentAuthorityV2(chain, new Date("2026-02-15T00:00:00Z"));
+      const auth = currentAuthority(chain, new Date("2026-02-15T00:00:00Z"));
       expect(auth?.mandate.mandateId).toBe(log[1]!.mandateId);
       expect(auth?.holder).toBe(founder.pubKey);
     } finally {
@@ -321,7 +321,7 @@ describe("upsert-mandate — succession (the ONE mechanism)", () => {
       );
       expect(code).toBe(0);
       expect(lines.join("\n")).toContain("holder CHANGES");
-      const log = readMandatesV2(root, "release");
+      const log = readMandates(root, "release");
       const chain = verifyMandateChainFromPin(mandatePinHash(r), log);
       expect(chain.validMandates.length).toBe(2);
       expect(chain.validMandates[1]!.holder).toBe(backup.pubKey);

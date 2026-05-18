@@ -3,13 +3,13 @@
  *
  *   .maintainers/
  *   ├── keys/<email>.json
- *   ├── tracks/<track>/mandates/<iso>-<id>.json   (v2 MandateV2 only)
+ *   ├── tracks/<track>/mandates/<iso>-<id>.json   (v2 Mandate only)
  *   ├── endorsements/<semver-tag>.json
  *   └── ca-endorsements/<iso>-<short-id>.json      (the weekly CA lease)
  *
  * There is **no `policy.json`** (root or per-track) in v2: the
  * succession rule (approvalRule + successors + minSuccessors +
- * maxDurationSeconds) lives INLINE in each `MandateV2`, and the
+ * maxDurationSeconds) lives INLINE in each `Mandate`, and the
  * project-level contact/track-list rides the from-scratch (root)
  * mandate's inline `project` field (L2). A v1 `Mandate` file
  * (`version: 1`) is malformed for this store and is silently ignored,
@@ -25,14 +25,14 @@ import * as path from "node:path";
 import type {
   CaEndorsement,
   KeyFile,
-  MandateV2,
+  Mandate,
   ReleaseEndorsement,
 } from "@maintainers/protocol";
 import { CliError } from "./args.js";
 
 export interface MaintainersStore {
   rootDir: string;
-  mandatesByTrack: Map<string, MandateV2[]>;
+  mandatesByTrack: Map<string, Mandate[]>;
   endorsements: ReleaseEndorsement[];
 }
 
@@ -48,7 +48,7 @@ export function readStore(rootDir: string): MaintainersStore {
     for (const name of fs.readdirSync(tracksDir).sort()) {
       const trackDir = path.join(tracksDir, name);
       if (!fs.statSync(trackDir).isDirectory()) continue;
-      out.mandatesByTrack.set(name, readMandatesV2(rootDir, name));
+      out.mandatesByTrack.set(name, readMandates(rootDir, name));
     }
   }
 
@@ -79,19 +79,19 @@ export interface WrittenPath {
  * Read a track's v2 mandate log (LOCKED Phase-2 v2). On-disk directory
  * convention `tracks/<track>/mandates/*.json`, filename-sorted as the
  * canonical-log substitute (real adapters get order from git), filtered
- * to `version === 2`. There is NO `policy.json`: the succession policy
+ * to `version === 1`. There is NO `policy.json`: the succession policy
  * is folded INTO each mandate. The published static-fetch layout
  * (`tracks/<t>/log.json`) is a later (c5) distribution artifact; the
  * CLI's authoring store stays file-per-mandate.
  */
-export function readMandatesV2(rootDir: string, track: string): MandateV2[] {
+export function readMandates(rootDir: string, track: string): Mandate[] {
   const dir = path.join(rootDir, "tracks", track, "mandates");
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-  const out: MandateV2[] = [];
+  const out: Mandate[] = [];
   for (const f of files) {
     const parsed = readJson(path.join(dir, f));
-    if (isMandateV2(parsed)) out.push(parsed);
+    if (isMandate(parsed)) out.push(parsed);
   }
   return out;
 }
@@ -101,7 +101,7 @@ export function readMandatesV2(rootDir: string, track: string): MandateV2[] {
  * Append-only (refuse-overwrite); the from-scratch (root) mandate and
  * every successor are distinct files, by design.
  */
-export function writeMandateV2(rootDir: string, m: MandateV2): WrittenPath {
+export function writeMandate(rootDir: string, m: Mandate): WrittenPath {
   const dir = path.join(rootDir, "tracks", m.track, "mandates");
   fs.mkdirSync(dir, { recursive: true });
   const abs = path.join(dir, mandateFilename(m));
@@ -112,12 +112,12 @@ export function writeMandateV2(rootDir: string, m: MandateV2): WrittenPath {
   return { absolute: abs, relative: path.relative(rootDir, abs) };
 }
 
-function isMandateV2(x: unknown): x is MandateV2 {
+function isMandate(x: unknown): x is Mandate {
   if (typeof x !== "object" || x === null) return false;
   const o = x as Record<string, unknown>;
   return (
     o.kind === "Mandate" &&
-    o.version === 2 &&
+    o.version === 1 &&
     typeof o.mandateId === "string" &&
     typeof o.track === "string" &&
     typeof o.holder === "string" &&
@@ -212,7 +212,7 @@ export function writeKeyFile(rootDir: string, k: KeyFile): WrittenPath {
  * `--dry-run` preview can show the exact path that WOULD be written.
  */
 export function mandateFilename(
-  m: Pick<MandateV2, "issuedAt" | "mandateId">,
+  m: Pick<Mandate, "issuedAt" | "mandateId">,
 ): string {
   const compact = m.issuedAt.replace(/[:\-]/g, "").replace(/\..*Z$/, "Z").replace(/Z$/, "");
   const safeCompact = compact.replace(/[^0-9T]/g, "");

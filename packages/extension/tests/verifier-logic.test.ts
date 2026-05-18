@@ -4,7 +4,7 @@
  * #31: the extension is a READ-ONLY status/preview surface with NO
  * baked pin. It verifies each track's mandate log FORWARD from the
  * first on-repo mandate (the read-only-preview anchor) via
- * verifyMandateChainFromPin + currentAuthorityV2. These tests pin the
+ * verifyMandateChainFromPin + currentAuthority. These tests pin the
  * v2 path AND its fail-closed negatives (empty pin ⇒ no-pin ⇒ reject;
  * pin-not-in-log/forked ⇒ reject; unauthorised successor ⇒
  * signer-not-in-successor-set) — mirroring the c4.5b project.test.ts
@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  currentAuthorityV2,
+  currentAuthority,
   generateKeypair,
   mandatePinHash,
   verifyMandateChainFromPin,
@@ -22,7 +22,7 @@ import {
   formatDuration,
   _verifyChainForTest,
 } from "../src/verifier-logic.js";
-import { buildFixture, mkV2 } from "./fixtures/build-fixture.js";
+import { buildFixture, mk } from "./fixtures/build-fixture.js";
 
 function kp(seedByte: number): { privKey: string; pubKey: string } {
   const seed = new Uint8Array(32);
@@ -175,7 +175,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
   it("pin-not-in-log (forked/tampered) ⇒ rootError, no chain", () => {
     const alice = kp(1);
     const eve = kp(99);
-    const real = mkV2({
+    const real = mk({
       id: "r-0000-0000-0000-000000000001",
       holder: alice.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",
@@ -184,7 +184,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
       signedBy: alice.pubKey,
       signWith: [alice.privKey],
     });
-    const forged = mkV2({
+    const forged = mk({
       id: "r-0000-0000-0000-000000000099",
       holder: eve.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",
@@ -197,7 +197,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
     const chain = verifyMandateChainFromPin(mandatePinHash(real), [forged]);
     expect(chain.root).toBeNull();
     expect(chain.rootError).toBe("pin-not-in-log");
-    expect(currentAuthorityV2(chain, NOW)).toBeNull();
+    expect(currentAuthority(chain, NOW)).toBeNull();
   });
 
   it("the view helper fail-closes on an empty mandate list", () => {
@@ -207,7 +207,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
   it("rejects an unauthorised successor (signer not in predecessor's successors)", () => {
     const alice = kp(1);
     const eve = kp(99);
-    const root = mkV2({
+    const root = mk({
       id: "r-0000-0000-0000-000000000001",
       holder: alice.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",
@@ -216,7 +216,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
       signedBy: alice.pubKey,
       signWith: [alice.privKey],
     });
-    const stolen = mkV2({
+    const stolen = mk({
       id: "r-0000-0000-0000-000000000099",
       holder: eve.pubKey,
       issuedAt: "2026-02-01T00:00:00Z",
@@ -234,7 +234,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
   it("computeOverlayState surfaces a rejected successor as a red chain-gap", () => {
     const alice = kp(1);
     const eve = kp(99);
-    const root = mkV2({
+    const root = mk({
       id: "r-0000-0000-0000-000000000001",
       holder: alice.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",
@@ -243,7 +243,7 @@ describe("computeOverlayState — FAIL-CLOSED negatives (#30/#31 v2)", () => {
       signedBy: alice.pubKey,
       signWith: [alice.privKey],
     });
-    const stolen = mkV2({
+    const stolen = mk({
       id: "r-0000-0000-0000-000000000099",
       holder: eve.pubKey,
       issuedAt: "2026-02-01T00:00:00Z",

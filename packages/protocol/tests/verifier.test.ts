@@ -9,13 +9,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { generateKeypair } from "../src/crypto.js";
-import { canonicalMandateV2, mandatePinHash } from "../src/canonical.js";
-import { signMandateV2, signMandateV2With, privKeySigner } from "../src/signing.js";
+import { canonicalMandate, mandatePinHash } from "../src/canonical.js";
+import { signMandate, signMandateWith, privKeySigner } from "../src/signing.js";
 import {
   verifyMandateChainFromPin,
-  currentAuthorityV2,
-} from "../src/verifierV2.js";
-import type { MandateV2 } from "../src/types.js";
+  currentAuthority,
+} from "../src/verifier.js";
+import type { Mandate } from "../src/types.js";
 
 function kp(seedByte: number): { privKey: string; pubKey: string } {
   const seed = new Uint8Array(32);
@@ -43,15 +43,15 @@ interface MkOpts {
   minSuccessors?: number;
   maxDurationSeconds?: number;
   defaultDurationSeconds?: number;
-  project?: MandateV2["project"];
+  project?: Mandate["project"];
   signedBy: string;
   signWith: string[]; // privKeys
 }
 
-function mk(o: MkOpts): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+function mk(o: MkOpts): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: o.id,
     track: o.track ?? "release",
     holder: o.holder,
@@ -65,11 +65,11 @@ function mk(o: MkOpts): MandateV2 {
     ...(o.project ? { project: o.project } : {}),
     signedBy: o.signedBy,
   };
-  return signMandateV2(unsigned, o.signWith.map((privKey) => ({ privKey })));
+  return signMandate(unsigned, o.signWith.map((privKey) => ({ privKey })));
 }
 
 // A from-scratch (root) mandate: self-signed by its holder, project set.
-function root(over: Partial<MkOpts> = {}): MandateV2 {
+function root(over: Partial<MkOpts> = {}): Mandate {
   return mk({
     id: "00000000-0000-4000-8000-000000000000",
     holder: founder.pubKey,
@@ -105,21 +105,21 @@ describe("verify-forward-from-pin — happy path", () => {
     expect(chain.rejections).toEqual([]);
 
     // before any mandate
-    expect(currentAuthorityV2(chain, new Date("2025-12-31T00:00:00Z"))).toBeNull();
+    expect(currentAuthority(chain, new Date("2025-12-31T00:00:00Z"))).toBeNull();
     // inside root only
-    expect(currentAuthorityV2(chain, new Date("2026-01-10T00:00:00Z"))?.mandate.mandateId).toBe(
+    expect(currentAuthority(chain, new Date("2026-01-10T00:00:00Z"))?.mandate.mandateId).toBe(
       r.mandateId,
     );
     // overlap: most-recent valid wins → k1
-    expect(currentAuthorityV2(chain, new Date("2026-02-20T00:00:00Z"))?.mandate.mandateId).toBe(
+    expect(currentAuthority(chain, new Date("2026-02-20T00:00:00Z"))?.mandate.mandateId).toBe(
       k1.mandateId,
     );
     // inside k1 only
-    expect(currentAuthorityV2(chain, new Date("2026-04-01T00:00:00Z"))?.holder).toBe(
+    expect(currentAuthority(chain, new Date("2026-04-01T00:00:00Z"))?.holder).toBe(
       founder.pubKey,
     );
     // after k1 expiry → fail closed
-    expect(currentAuthorityV2(chain, new Date("2026-05-01T00:00:00Z"))).toBeNull();
+    expect(currentAuthority(chain, new Date("2026-05-01T00:00:00Z"))).toBeNull();
   });
 
   it("L1 multi-pin: pinning at root vs at k1 both verify; same authority at now", () => {
@@ -153,8 +153,8 @@ describe("verify-forward-from-pin — happy path", () => {
     ]);
     expect(fromK1.validMandates.map((m) => m.mandateId)).toEqual([k1.mandateId, k2.mandateId]);
     // The pin moved the floor but not the answer at `now`.
-    expect(currentAuthorityV2(fromRoot, now)?.mandate.mandateId).toBe(k2.mandateId);
-    expect(currentAuthorityV2(fromK1, now)?.mandate.mandateId).toBe(k2.mandateId);
+    expect(currentAuthority(fromRoot, now)?.mandate.mandateId).toBe(k2.mandateId);
+    expect(currentAuthority(fromK1, now)?.mandate.mandateId).toBe(k2.mandateId);
   });
 
   it("2-of-3 threshold is satisfied by any two named successors", () => {
@@ -183,7 +183,7 @@ describe("L1 fail-closed: the pin is the floor", () => {
     const chain = verifyMandateChainFromPin("", [r]);
     expect(chain.rootError).toBe("no-pin");
     expect(chain.validMandates).toEqual([]);
-    expect(currentAuthorityV2(chain, new Date("2026-01-10T00:00:00Z"))).toBeNull();
+    expect(currentAuthority(chain, new Date("2026-01-10T00:00:00Z"))).toBeNull();
   });
 
   it("pin matches no mandate in the log ⇒ pin-not-in-log", () => {
@@ -197,7 +197,7 @@ describe("L1 fail-closed: the pin is the floor", () => {
   it("forked/tampered pin: a mandate mutated post-signing no longer hashes to the pin", () => {
     const r = root();
     const pin = mandatePinHash(r);
-    const tampered: MandateV2 = { ...r, holder: eve.pubKey }; // signature now stale; hash differs
+    const tampered: Mandate = { ...r, holder: eve.pubKey }; // signature now stale; hash differs
     const chain = verifyMandateChainFromPin(pin, [tampered]);
     expect(chain.rootError).toBe("pin-not-in-log");
     expect(chain.validMandates).toEqual([]);
@@ -206,7 +206,7 @@ describe("L1 fail-closed: the pin is the floor", () => {
   it("root with an invalid signature ⇒ root-signature-invalid", () => {
     const r = root();
     const pin = mandatePinHash(r); // pin is content-bound, so it still matches
-    const bad: MandateV2 = {
+    const bad: Mandate = {
       ...r,
       signatures: [{ pubkey: founder.pubKey, sig: "00".repeat(64) }],
     };
@@ -216,9 +216,9 @@ describe("L1 fail-closed: the pin is the floor", () => {
 
   it("root whose signedBy is not among its signatures ⇒ root-not-self-signed", () => {
     // backup validly signs bytes that declare signedBy=founder.
-    const unsigned: Omit<MandateV2, "signatures"> = {
+    const unsigned: Omit<Mandate, "signatures"> = {
       kind: "Mandate",
-      version: 2,
+      version: 1,
       mandateId: "00000000-0000-4000-8000-0000000000aa",
       track: "release",
       holder: founder.pubKey,
@@ -231,7 +231,7 @@ describe("L1 fail-closed: the pin is the floor", () => {
       defaultDurationSeconds: 60 * DAY,
       signedBy: founder.pubKey,
     };
-    const m = signMandateV2(unsigned, [{ privKey: backup.privKey }]); // signer ≠ signedBy
+    const m = signMandate(unsigned, [{ privKey: backup.privKey }]); // signer ≠ signedBy
     const chain = verifyMandateChainFromPin(mandatePinHash(m), [m]);
     expect(chain.rootError).toBe("root-not-self-signed");
   });
@@ -418,7 +418,7 @@ describe("rolled-back / tampered history & totality", () => {
     // inject a non-hex holder AFTER signing — same track, so it reaches
     // the forward step; canonicalization throws internally and MUST be
     // caught (totality), surfacing as a rejection, never an exception.
-    const poisoned: MandateV2 = { ...evil, holder: "zz" + "00".repeat(31) };
+    const poisoned: Mandate = { ...evil, holder: "zz" + "00".repeat(31) };
     expect(() =>
       verifyMandateChainFromPin(mandatePinHash(r), [r, poisoned]),
     ).not.toThrow();
@@ -430,9 +430,9 @@ describe("rolled-back / tampered history & totality", () => {
 
 describe("canonical/pin/signing invariants", () => {
   it("the pin is content-bound and signature-independent", () => {
-    const unsigned: Omit<MandateV2, "signatures"> = {
+    const unsigned: Omit<Mandate, "signatures"> = {
       kind: "Mandate",
-      version: 2,
+      version: 1,
       mandateId: "00000000-0000-4000-8000-0000000000bb",
       track: "release",
       holder: founder.pubKey,
@@ -445,8 +445,8 @@ describe("canonical/pin/signing invariants", () => {
       defaultDurationSeconds: 60 * DAY,
       signedBy: founder.pubKey,
     };
-    const oneSig = signMandateV2(unsigned, [{ privKey: founder.privKey }]);
-    const twoSig = signMandateV2(unsigned, [
+    const oneSig = signMandate(unsigned, [{ privKey: founder.privKey }]);
+    const twoSig = signMandate(unsigned, [
       { privKey: founder.privKey },
       { privKey: backup.privKey },
     ]);
@@ -454,10 +454,10 @@ describe("canonical/pin/signing invariants", () => {
     expect(mandatePinHash(oneSig)).toBe(mandatePinHash(unsigned));
   });
 
-  it("signMandateV2With (external signer) is byte-identical to signMandateV2", async () => {
-    const unsigned: Omit<MandateV2, "signatures"> = {
+  it("signMandateWith (external signer) is byte-identical to signMandate", async () => {
+    const unsigned: Omit<Mandate, "signatures"> = {
       kind: "Mandate",
-      version: 2,
+      version: 1,
       mandateId: "00000000-0000-4000-8000-0000000000cc",
       track: "release",
       holder: founder.pubKey,
@@ -470,10 +470,10 @@ describe("canonical/pin/signing invariants", () => {
       defaultDurationSeconds: 60 * DAY,
       signedBy: founder.pubKey,
     };
-    const sync = signMandateV2(unsigned, [{ privKey: founder.privKey }]);
-    const ext = await signMandateV2With(unsigned, [privKeySigner(founder.privKey)]);
+    const sync = signMandate(unsigned, [{ privKey: founder.privKey }]);
+    const ext = await signMandateWith(unsigned, [privKeySigner(founder.privKey)]);
     expect(ext.signatures).toEqual(sync.signatures);
-    expect(canonicalMandateV2(ext)).toEqual(canonicalMandateV2(sync));
+    expect(canonicalMandate(ext)).toEqual(canonicalMandate(sync));
   });
 
   it("successor order is part of canonical bytes (reordering changes the pin)", () => {

@@ -33,10 +33,10 @@
  */
 
 import {
-  signMandateV2With,
-  canonicalMandateV2,
+  signMandateWith,
+  canonicalMandate,
   mandatePinHash,
-  type MandateV2,
+  type Mandate,
 } from "@maintainers/protocol";
 import * as path from "node:path";
 import { parseDurationMs, isoFromMsSince } from "../lib/duration.js";
@@ -62,7 +62,7 @@ import {
   previewConfirmSign,
   signAssembled,
 } from "../lib/ceremony.js";
-import { readMandatesV2, writeMandateV2, mandateFilename } from "../lib/store.js";
+import { readMandates, writeMandate, mandateFilename } from "../lib/store.js";
 
 export interface UpsertMandateOptions {
   track: string;
@@ -89,7 +89,7 @@ function signerOpts(opts: UpsertMandateOptions): SignerOptions {
   return { io: opts.io, pivTransport: opts.pivTransport, pivPin: opts.pivPin };
 }
 
-type UnsignedMandateV2 = Omit<MandateV2, "signatures">;
+type UnsignedMandate = Omit<Mandate, "signatures">;
 
 const RULE = "────────────────────────────────────────────────────────────";
 
@@ -106,9 +106,9 @@ function durSeconds(s: string): number {
  */
 export async function assembleUpsertMandate(
   opts: UpsertMandateOptions,
-): Promise<Assembled<UnsignedMandateV2>> {
+): Promise<Assembled<UnsignedMandate>> {
   const sopts = signerOpts(opts);
-  const prior = readMandatesV2(opts.rootDir, opts.track);
+  const prior = readMandates(opts.rootDir, opts.track);
   const signerPub = await loadSignerBoundPubKey(opts.signingKeySource, sopts);
   const holderPub = opts.holderSource
     ? await loadSignerPubKey(opts.holderSource, sopts)
@@ -127,7 +127,7 @@ export async function assembleUpsertMandate(
   let maxDurationSeconds: number;
   let defaultDurationSeconds: number;
   let signedBy: string;
-  let project: MandateV2["project"] | undefined;
+  let project: Mandate["project"] | undefined;
   let bannerExtra: string[];
 
   if (isFromScratch) {
@@ -247,9 +247,9 @@ export async function assembleUpsertMandate(
     );
   }
 
-  const unsigned: UnsignedMandateV2 = {
+  const unsigned: UnsignedMandate = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: opts.uuid(),
     track: opts.track,
     holder: holderPub,
@@ -267,7 +267,7 @@ export async function assembleUpsertMandate(
   return {
     ceremony: "upsert-mandate",
     unsigned,
-    canonical: canonicalMandateV2(unsigned),
+    canonical: canonicalMandate(unsigned),
     signingKeySource: opts.signingKeySource,
     signedBy,
     rootDir: opts.rootDir,
@@ -283,9 +283,9 @@ export async function assembleUpsertMandate(
 
 export async function buildUpsertMandate(
   opts: UpsertMandateOptions,
-): Promise<MandateV2> {
+): Promise<Mandate> {
   const a = await assembleUpsertMandate(opts);
-  return signAssembled(a, signMandateV2With, signerOpts(opts));
+  return signAssembled(a, signMandateWith, signerOpts(opts));
 }
 
 export interface UpsertMandateCmdEnv {
@@ -364,7 +364,7 @@ export async function runUpsertMandate(
     pivPin: env.pivPin,
   });
 
-  const m = await previewConfirmSign(a, signMandateV2With, {
+  const m = await previewConfirmSign(a, signMandateWith, {
     dryRun,
     yes,
     env: {
@@ -377,7 +377,7 @@ export async function runUpsertMandate(
   });
   if (!m) return 0; // dry-run
 
-  const written = writeMandateV2(a.rootDir, m);
+  const written = writeMandate(a.rootDir, m);
   const pin = mandatePinHash(m);
   const isFromScratch = m.project !== undefined;
   env.println(`wrote ${isFromScratch ? "from-scratch (root)" : "succession"} ` +

@@ -21,12 +21,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   canonicalCaEndorsement,
-  canonicalMandateV2,
+  canonicalMandate,
   generateKeypair,
   sign,
-  signMandateV2With,
+  signMandateWith,
   verify,
-  type MandateV2,
+  type Mandate,
 } from "@maintainers/protocol";
 import {
   assembleCaEndorsement,
@@ -164,7 +164,7 @@ describe("ca-endorsement --dry-run", () => {
 });
 
 describe("upsert-mandate --dry-run", () => {
-  it("from-scratch dry-run: no mandate written, exact canonicalMandateV2 bytes, no PIN/tap", async () => {
+  it("from-scratch dry-run: no mandate written, exact canonicalMandate bytes, no PIN/tap", async () => {
     const maintainer = keypair(2);
     const { tmp, root } = tmpRoot("dry-um-");
     try {
@@ -210,7 +210,7 @@ describe("upsert-mandate --dry-run", () => {
       expect(out).toContain("DRY RUN — upsert-mandate");
       expect(out).toContain("FROM-SCRATCH ORIGIN");
       expect(out).toContain(hex(a.canonical));
-      expect(out).toContain(hex(canonicalMandateV2(a.unsigned)));
+      expect(out).toContain(hex(canonicalMandate(a.unsigned)));
       expect(out).not.toContain('"signatures"');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -222,9 +222,9 @@ describe("signAssembled fail-closed guard", () => {
   it("refuses when the resolved signer ≠ the assembled signedBy", async () => {
     const a = keypair(5);
     const b = keypair(6);
-    const unsigned: Omit<MandateV2, "signatures"> = {
+    const unsigned: Omit<Mandate, "signatures"> = {
       kind: "Mandate",
-      version: 2,
+      version: 1,
       mandateId: "m-guard",
       track: "ca",
       holder: a.pubKey,
@@ -242,13 +242,13 @@ describe("signAssembled fail-closed guard", () => {
         {
           ceremony: "upsert-mandate",
           unsigned,
-          canonical: canonicalMandateV2(unsigned),
+          canonical: canonicalMandate(unsigned),
           signingKeySource: "yubikey-piv:slot=9c",
           signedBy: a.pubKey,
           rootDir: ".maintainers",
           targetRelative: "tracks/ca/mandates/x.json",
         },
-        signMandateV2With,
+        signMandateWith,
         {
           pivTransport: {
             async getPublicKey() {

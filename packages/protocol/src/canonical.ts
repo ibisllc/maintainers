@@ -13,7 +13,7 @@
 
 import { sha256Hex } from "./crypto.js";
 import type {
-  MandateV2,
+  Mandate,
   KeyFile,
   KeyRedirect,
   EmailRotation,
@@ -259,7 +259,7 @@ function validateHexOrEmpty(name: string, value: string | null, length: number):
 }
 
 // ---------------------------------------------------------------------------
-// Mandate v2 canonical bytes.  Tag: maintainers/mandate/v2
+// Mandate canonical bytes.  Tag: maintainers/mandate/v1
 //
 // Field order (fixed; one slot per logical field — no nested
 // fingerprints, so a missing `project` is just four empty slots and the
@@ -303,9 +303,9 @@ function canonicalUint(name: string, n: number): string {
   return String(n);
 }
 
-export function canonicalMandateV2(m: Omit<MandateV2, "signatures">): Uint8Array {
-  if (m.kind !== "Mandate" || m.version !== 2) {
-    throw new CanonicalBytesError("kind/version", "wrong-shape", "not a v2 Mandate envelope");
+export function canonicalMandate(m: Omit<Mandate, "signatures">): Uint8Array {
+  if (m.kind !== "Mandate" || m.version !== 1) {
+    throw new CanonicalBytesError("kind/version", "wrong-shape", "not a Mandate envelope");
   }
   validateField("mandateId", m.mandateId);
   validateField("track", m.track);
@@ -330,7 +330,7 @@ export function canonicalMandateV2(m: Omit<MandateV2, "signatures">): Uint8Array
   validateField("project.homepage", projHome);
   for (const t of projTracks) validateNoComma("project.track", t);
   validateHex("signedBy", m.signedBy, 64);
-  return joinTagged2("mandate", [
+  return joinTaggedMandate("mandate", [
     m.mandateId,
     m.track,
     m.holder,
@@ -349,9 +349,9 @@ export function canonicalMandateV2(m: Omit<MandateV2, "signatures">): Uint8Array
   ]);
 }
 
-/** Like {@link joinTagged} but stamps the `v2` version segment. */
-function joinTagged2(kind: string, parts: string[]): Uint8Array {
-  const tag = `${TAG_PREFIX}/${kind}/v2`;
+/** Like {@link joinTagged} but stamps the `v1` version segment. */
+function joinTaggedMandate(kind: string, parts: string[]): Uint8Array {
+  const tag = `${TAG_PREFIX}/${kind}/v1`;
   const all = [tag, ...parts];
   for (let i = 1; i < all.length; i++) {
     const part = all[i];
@@ -363,7 +363,7 @@ function joinTagged2(kind: string, parts: string[]): Uint8Array {
 }
 
 /**
- * The pin: SHA-256 (lower-hex) of a v2 mandate's canonical bytes — the
+ * The pin: SHA-256 (lower-hex) of a mandate's canonical bytes — the
  * exact bytes that are signed. This is the value baked per surface
  * (#30 generalised). It commits to the mandate's content + inline
  * policy (NOT its signatures, which the forward-walk re-verifies
@@ -371,6 +371,6 @@ function joinTagged2(kind: string, parts: string[]): Uint8Array {
  * bit-identical to the pinned one (sha256 collision-resistance) — that
  * is what makes L1 "the pin IS the floor" sound.
  */
-export function mandatePinHash(m: Omit<MandateV2, "signatures">): string {
-  return sha256Hex(canonicalMandateV2(m));
+export function mandatePinHash(m: Omit<Mandate, "signatures">): string {
+  return sha256Hex(canonicalMandate(m));
 }

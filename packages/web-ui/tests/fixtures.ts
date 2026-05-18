@@ -1,6 +1,6 @@
 /**
  * v2 test fixtures (LOCKED Phase-2 v2 model). Mirrors the
- * cloudflare-worker `mkV2` helper from c4.5a so web-ui tests exercise
+ * cloudflare-worker `mk` helper from c4.5a so web-ui tests exercise
  * the same forward-from-pin path. No policy.json — the succession rule
  * is inline in each mandate.
  */
@@ -8,9 +8,9 @@
 import {
   generateKeypair,
   signKeyFile,
-  signMandateV2,
+  signMandate,
   type KeyFile,
-  type MandateV2,
+  type Mandate,
 } from "@maintainers/protocol";
 
 const DAY = 86400;
@@ -21,7 +21,7 @@ export function kp(seedByte: number): { privKey: string; pubKey: string } {
   return generateKeypair(seed);
 }
 
-export interface MkV2 {
+export interface Mk {
   id: string;
   track?: string;
   holder: string;
@@ -36,10 +36,10 @@ export interface MkV2 {
   signWith: string[];
 }
 
-export function mkV2(o: MkV2): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+export function mk(o: Mk): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: o.id,
     track: o.track ?? "release",
     holder: o.holder,
@@ -53,7 +53,7 @@ export function mkV2(o: MkV2): MandateV2 {
     ...(o.project ? { project: o.project } : {}),
     signedBy: o.signedBy,
   };
-  return signMandateV2(unsigned, o.signWith.map((privKey) => ({ privKey })));
+  return signMandate(unsigned, o.signWith.map((privKey) => ({ privKey })));
 }
 
 export function mkKeyFile(p: {

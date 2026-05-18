@@ -14,17 +14,17 @@
 import { describe, expect, it } from "vitest";
 import {
   generateKeypair,
-  signMandateV2,
+  signMandate,
   signKeyFile,
   signEmailRotation,
   signReleaseEndorsement,
-  canonicalMandateV2,
+  canonicalMandate,
   canonicalKeyFile,
   canonicalEmailRotation,
   canonicalReleaseEndorsement,
   intermediateMerkleRoot,
   bytesToHex,
-  type MandateV2,
+  type Mandate,
   type KeyFile,
   type ReleaseEndorsement,
 } from "@maintainers/protocol";
@@ -38,7 +38,7 @@ function kp(seed: number): { privKey: string; pubKey: string } {
   return generateKeypair(s);
 }
 
-interface MkV2 {
+interface Mk {
   id: string;
   track?: string;
   holder: string;
@@ -52,10 +52,10 @@ interface MkV2 {
   signWith: string[];
 }
 
-function mkV2(o: MkV2): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+function mk(o: Mk): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: o.id,
     track: o.track ?? "release",
     holder: o.holder,
@@ -68,7 +68,7 @@ function mkV2(o: MkV2): MandateV2 {
     defaultDurationSeconds: 60 * DAY,
     signedBy: o.signedBy,
   };
-  return signMandateV2(unsigned, o.signWith.map((privKey) => ({ privKey })));
+  return signMandate(unsigned, o.signWith.map((privKey) => ({ privKey })));
 }
 
 function emptyState(): RepoState {
@@ -79,8 +79,8 @@ function emptyState(): RepoState {
 function stateWithRoot(
   holder: { privKey: string; pubKey: string },
   successors: string[] = [],
-): { state: RepoState; mandate: MandateV2 } {
-  const m = mkV2({
+): { state: RepoState; mandate: Mandate } {
+  const m = mk({
     id: "g1-00000000-0000-0000-0000-000000000001",
     holder: holder.pubKey,
     issuedAt: "2026-01-01T00:00:00Z",
@@ -98,7 +98,7 @@ function stateWithRoot(
 
 describe("decide() — path-prefix fence", () => {
   const alice = kp(1);
-  const m = mkV2({
+  const m = mk({
     id: "id-00000000-0000-0000-0000-000000000010",
     holder: alice.pubKey,
     issuedAt: "2026-02-01T00:00:00Z",
@@ -107,7 +107,7 @@ describe("decide() — path-prefix fence", () => {
     signedBy: alice.pubKey,
     signWith: [alice.privKey],
   });
-  const bytes = bytesToHex(canonicalMandateV2(m));
+  const bytes = bytesToHex(canonicalMandate(m));
 
   it("rejects a path outside .maintainers/", () => {
     const r = decide({ path: "src/whatever.json", envelope: m, envelopeBytesHex: bytes, state: emptyState(), now: new Date("2026-02-01T01:00:00Z") });
@@ -143,14 +143,14 @@ describe("decide() — envelope-shape fence", () => {
     if (!r.ok) expect(r.reason).toBe("envelope-kind-unknown");
   });
 
-  it("rejects a v1 Mandate (v1 is retired — v2 is THE Mandate version)", () => {
-    const r = decide({ path: ".maintainers/x.json", envelope: { kind: "Mandate", version: 1 }, envelopeBytesHex: "00", state: emptyState(), now: new Date() });
+  it("rejects an unsupported Mandate version (v1 is THE Mandate version)", () => {
+    const r = decide({ path: ".maintainers/x.json", envelope: { kind: "Mandate", version: 2 }, envelopeBytesHex: "00", state: emptyState(), now: new Date() });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("mandate-version-unsupported");
   });
 
-  it("rejects a malformed v2 Mandate", () => {
-    const r = decide({ path: ".maintainers/x.json", envelope: { kind: "Mandate", version: 2 }, envelopeBytesHex: "00", state: emptyState(), now: new Date() });
+  it("rejects a malformed Mandate (correct version, bad shape)", () => {
+    const r = decide({ path: ".maintainers/x.json", envelope: { kind: "Mandate", version: 1 }, envelopeBytesHex: "00", state: emptyState(), now: new Date() });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("mandate-shape");
   });
@@ -165,7 +165,7 @@ describe("decide() — envelope-shape fence", () => {
 describe("decide() — canonical-bytes fence", () => {
   it("rejects envelopes whose bytes don't match", () => {
     const alice = kp(1);
-    const m = mkV2({ id: "id-00000000-0000-0000-0000-000000000020", holder: alice.pubKey, issuedAt: "2026-02-01T00:00:00Z", expiresAt: "2026-04-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
+    const m = mk({ id: "id-00000000-0000-0000-0000-000000000020", holder: alice.pubKey, issuedAt: "2026-02-01T00:00:00Z", expiresAt: "2026-04-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
     const r = decide({ path: ".maintainers/tracks/release/mandates/m.json", envelope: m, envelopeBytesHex: "deadbeef", state: emptyState(), now: new Date("2026-02-01T01:00:00Z") });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("canonical-bytes-mismatch");
@@ -175,9 +175,9 @@ describe("decide() — canonical-bytes fence", () => {
 describe("decide() — signature fence", () => {
   it("rejects a Mandate whose signature was forged", () => {
     const alice = kp(1);
-    const m: MandateV2 = {
+    const m: Mandate = {
       kind: "Mandate",
-      version: 2,
+      version: 1,
       mandateId: "id-00000000-0000-0000-0000-000000000030",
       track: "release",
       holder: alice.pubKey,
@@ -191,7 +191,7 @@ describe("decide() — signature fence", () => {
       signedBy: alice.pubKey,
       signatures: [{ pubkey: alice.pubKey, sig: "00".repeat(64) }],
     };
-    const r = decide({ path: ".maintainers/tracks/release/mandates/m.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandateV2(m)), state: emptyState(), now: new Date("2026-02-01T01:00:00Z") });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/m.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandate(m)), state: emptyState(), now: new Date("2026-02-01T01:00:00Z") });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("signature-invalid");
   });
@@ -199,8 +199,8 @@ describe("decide() — signature fence", () => {
   it("rejects when signedBy is not present in signatures", () => {
     const alice = kp(1);
     const bob = kp(2);
-    const m = mkV2({ id: "id-00000000-0000-0000-0000-000000000031", holder: alice.pubKey, issuedAt: "2026-02-01T00:00:00Z", expiresAt: "2026-04-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [bob.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/m.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandateV2(m)), state: emptyState(), now: new Date("2026-02-01T01:00:00Z") });
+    const m = mk({ id: "id-00000000-0000-0000-0000-000000000031", holder: alice.pubKey, issuedAt: "2026-02-01T00:00:00Z", expiresAt: "2026-04-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [bob.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/m.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandate(m)), state: emptyState(), now: new Date("2026-02-01T01:00:00Z") });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("signedBy-not-in-signatures");
   });
@@ -209,16 +209,16 @@ describe("decide() — signature fence", () => {
 describe("decide() — from-scratch root acceptance", () => {
   it("accepts a well-formed self-signed v2 root when state is empty", () => {
     const alice = kp(1);
-    const m = mkV2({ id: "g1-00000000-0000-0000-0000-000000000040", holder: alice.pubKey, issuedAt: "2026-01-01T00:00:00Z", expiresAt: "2026-07-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-01-01-root.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandateV2(m)), state: emptyState(), now: new Date("2026-01-01T01:00:00Z") });
+    const m = mk({ id: "g1-00000000-0000-0000-0000-000000000040", holder: alice.pubKey, issuedAt: "2026-01-01T00:00:00Z", expiresAt: "2026-07-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-01-01-root.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandate(m)), state: emptyState(), now: new Date("2026-01-01T01:00:00Z") });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.commitMessage).toMatch(/^maintainers: Mandate by /);
   });
 
   it("rejects a from-scratch root with expiresAt <= issuedAt", () => {
     const alice = kp(1);
-    const m = mkV2({ id: "g1-00000000-0000-0000-0000-000000000041", holder: alice.pubKey, issuedAt: "2026-07-01T00:00:00Z", expiresAt: "2026-01-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-01-01-root.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandateV2(m)), state: emptyState(), now: new Date() });
+    const m = mk({ id: "g1-00000000-0000-0000-0000-000000000041", holder: alice.pubKey, issuedAt: "2026-07-01T00:00:00Z", expiresAt: "2026-01-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-01-01-root.json", envelope: m, envelopeBytesHex: bytesToHex(canonicalMandate(m)), state: emptyState(), now: new Date() });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("mandate-rejected");
   });
@@ -228,8 +228,8 @@ describe("decide() — v2 forward-succession authority", () => {
   it("accepts a renewal that satisfies the predecessor's embedded rule", () => {
     const alice = kp(1);
     const { state } = stateWithRoot(alice, [alice.pubKey]);
-    const renewal = mkV2({ id: "r1-00000000-0000-0000-0000-000000000050", holder: alice.pubKey, issuedAt: "2026-06-01T00:00:00Z", expiresAt: "2027-01-01T00:00:00Z", successors: [alice.pubKey], signedBy: alice.pubKey, signWith: [alice.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-06-01-renewal.json", envelope: renewal, envelopeBytesHex: bytesToHex(canonicalMandateV2(renewal)), state, now: new Date("2026-06-01T01:00:00Z") });
+    const renewal = mk({ id: "r1-00000000-0000-0000-0000-000000000050", holder: alice.pubKey, issuedAt: "2026-06-01T00:00:00Z", expiresAt: "2027-01-01T00:00:00Z", successors: [alice.pubKey], signedBy: alice.pubKey, signWith: [alice.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-06-01-renewal.json", envelope: renewal, envelopeBytesHex: bytesToHex(canonicalMandate(renewal)), state, now: new Date("2026-06-01T01:00:00Z") });
     expect(r.ok).toBe(true);
   });
 
@@ -237,8 +237,8 @@ describe("decide() — v2 forward-succession authority", () => {
     const alice = kp(1);
     const eve = kp(99);
     const { state } = stateWithRoot(alice, [alice.pubKey]);
-    const hostile = mkV2({ id: "h1-00000000-0000-0000-0000-000000000051", holder: eve.pubKey, issuedAt: "2026-06-01T00:00:00Z", expiresAt: "2027-01-01T00:00:00Z", successors: [], signedBy: eve.pubKey, signWith: [eve.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-06-01-hostile.json", envelope: hostile, envelopeBytesHex: bytesToHex(canonicalMandateV2(hostile)), state, now: new Date("2026-06-01T01:00:00Z") });
+    const hostile = mk({ id: "h1-00000000-0000-0000-0000-000000000051", holder: eve.pubKey, issuedAt: "2026-06-01T00:00:00Z", expiresAt: "2027-01-01T00:00:00Z", successors: [], signedBy: eve.pubKey, signWith: [eve.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/2026-06-01-hostile.json", envelope: hostile, envelopeBytesHex: bytesToHex(canonicalMandate(hostile)), state, now: new Date("2026-06-01T01:00:00Z") });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("mandate-rejected");
   });
@@ -247,8 +247,8 @@ describe("decide() — v2 forward-succession authority", () => {
     const alice = kp(1);
     const bob = kp(2);
     const { state } = stateWithRoot(alice, [bob.pubKey]);
-    const takeover = mkV2({ id: "t1-00000000-0000-0000-0000-000000000052", holder: bob.pubKey, issuedAt: "2027-01-01T00:00:00Z", expiresAt: "2027-06-01T00:00:00Z", successors: [bob.pubKey], signedBy: bob.pubKey, signWith: [bob.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/2027-01-01-takeover.json", envelope: takeover, envelopeBytesHex: bytesToHex(canonicalMandateV2(takeover)), state, now: new Date("2027-01-01T01:00:00Z") });
+    const takeover = mk({ id: "t1-00000000-0000-0000-0000-000000000052", holder: bob.pubKey, issuedAt: "2027-01-01T00:00:00Z", expiresAt: "2027-06-01T00:00:00Z", successors: [bob.pubKey], signedBy: bob.pubKey, signWith: [bob.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/2027-01-01-takeover.json", envelope: takeover, envelopeBytesHex: bytesToHex(canonicalMandate(takeover)), state, now: new Date("2027-01-01T01:00:00Z") });
     expect(r.ok).toBe(true);
   });
 
@@ -257,8 +257,8 @@ describe("decide() — v2 forward-succession authority", () => {
     const bob = kp(2);
     const eve = kp(99);
     const { state } = stateWithRoot(alice, [bob.pubKey]);
-    const fake = mkV2({ id: "h2-00000000-0000-0000-0000-000000000053", holder: eve.pubKey, issuedAt: "2027-01-01T00:00:00Z", expiresAt: "2027-06-01T00:00:00Z", successors: [], signedBy: eve.pubKey, signWith: [eve.privKey] });
-    const r = decide({ path: ".maintainers/tracks/release/mandates/2027-01-01-attack.json", envelope: fake, envelopeBytesHex: bytesToHex(canonicalMandateV2(fake)), state, now: new Date("2027-01-01T01:00:00Z") });
+    const fake = mk({ id: "h2-00000000-0000-0000-0000-000000000053", holder: eve.pubKey, issuedAt: "2027-01-01T00:00:00Z", expiresAt: "2027-06-01T00:00:00Z", successors: [], signedBy: eve.pubKey, signWith: [eve.privKey] });
+    const r = decide({ path: ".maintainers/tracks/release/mandates/2027-01-01-attack.json", envelope: fake, envelopeBytesHex: bytesToHex(canonicalMandate(fake)), state, now: new Date("2027-01-01T01:00:00Z") });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("mandate-rejected");
   });
@@ -266,8 +266,8 @@ describe("decide() — v2 forward-succession authority", () => {
   it("accepts a from-scratch root for a NEW track even when another track has mandates (independent timelines)", () => {
     const alice = kp(1);
     const { state } = stateWithRoot(alice, [alice.pubKey]); // release track populated
-    const opsRoot = mkV2({ id: "o1-00000000-0000-0000-0000-000000000054", track: "ops", holder: alice.pubKey, issuedAt: "2026-02-01T00:00:00Z", expiresAt: "2026-08-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
-    const r = decide({ path: ".maintainers/tracks/ops/mandates/2026-02-01-root.json", envelope: opsRoot, envelopeBytesHex: bytesToHex(canonicalMandateV2(opsRoot)), state, now: new Date("2026-02-01T01:00:00Z") });
+    const opsRoot = mk({ id: "o1-00000000-0000-0000-0000-000000000054", track: "ops", holder: alice.pubKey, issuedAt: "2026-02-01T00:00:00Z", expiresAt: "2026-08-01T00:00:00Z", successors: [], signedBy: alice.pubKey, signWith: [alice.privKey] });
+    const r = decide({ path: ".maintainers/tracks/ops/mandates/2026-02-01-root.json", envelope: opsRoot, envelopeBytesHex: bytesToHex(canonicalMandate(opsRoot)), state, now: new Date("2026-02-01T01:00:00Z") });
     expect(r.ok).toBe(true);
   });
 });
@@ -381,7 +381,7 @@ describe("summarizeState()", () => {
     const alice = kp(1);
     const bob = kp(2);
     const { state, mandate: m1 } = stateWithRoot(alice, [bob.pubKey]);
-    const m2 = mkV2({ id: "t1-00000000-0000-0000-0000-000000000070", holder: bob.pubKey, issuedAt: "2027-01-01T00:00:00Z", expiresAt: "2027-06-01T00:00:00Z", successors: [], signedBy: bob.pubKey, signWith: [bob.privKey] });
+    const m2 = mk({ id: "t1-00000000-0000-0000-0000-000000000070", holder: bob.pubKey, issuedAt: "2027-01-01T00:00:00Z", expiresAt: "2027-06-01T00:00:00Z", successors: [], signedBy: bob.pubKey, signWith: [bob.privKey] });
     state.tracks.get("release")!.push(m2);
     const s = summarizeState(state, new Date("2027-02-01T00:00:00Z"));
     expect(s.takeoverAlarms).toHaveLength(1);

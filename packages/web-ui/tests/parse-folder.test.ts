@@ -2,8 +2,8 @@
  * parse-folder tests — LOCKED Phase-2 v2 model.
  *
  * v2 has NO policy.json (root or track): a track is just
- * `tracks/<track>/mandates/*.json`, each a version-2 Mandate. We
- * verify the parser only accepts version-2 mandates, surfaces
+ * `tracks/<track>/mandates/*.json`, each a version-1 Mandate. We
+ * verify the parser only accepts version-1 mandates, surfaces
  * malformed/v1 files without throwing, sorts by issuedAt, and resolves
  * the roster.
  */
@@ -11,11 +11,11 @@
 import { describe, expect, it } from "vitest";
 import { lookupHolder, parseMaintainersFolder } from "../src/parse-folder.js";
 import { pathForKeyFile, pathForMandate, serializeEnvelope } from "../src/envelopes.js";
-import { kp, mkKeyFile, mkV2 } from "./v2-fixtures.js";
+import { kp, mkKeyFile, mk } from "./fixtures.js";
 
 function makeRawFolder(): Map<string, Uint8Array> {
   const alice = kp(1);
-  const mandate = mkV2({
+  const mandate = mk({
     id: "abc-123-0000-0000-0000-000000000001",
     holder: alice.pubKey,
     issuedAt: "2026-05-11T00:00:00Z",
@@ -38,13 +38,13 @@ function makeRawFolder(): Map<string, Uint8Array> {
 }
 
 describe("parseMaintainersFolder (v2)", () => {
-  it("parses a well-formed v2 folder (no policy.json)", () => {
+  it("parses a well-formed folder (no policy.json)", () => {
     const folder = parseMaintainersFolder({ files: makeRawFolder() });
     expect(folder.tracks).toHaveLength(1);
     const t = folder.tracks[0]!;
     expect(t.name).toBe("release");
     expect(t.mandates).toHaveLength(1);
-    expect(t.mandates[0]!.version).toBe(2);
+    expect(t.mandates[0]!.version).toBe(1);
     expect(t.mandates[0]!.project?.name).toBe("demo");
     expect(folder.keys).toHaveLength(1);
     expect(folder.keys[0]!.keyfile?.displayName).toBe("Alice");
@@ -58,22 +58,22 @@ describe("parseMaintainersFolder (v2)", () => {
     expect(folder.tracks[0]!.mandates).toHaveLength(1);
   });
 
-  it("rejects a v1 Mandate as malformed (v2 is THE Mandate version)", () => {
+  it("rejects a wrong-version Mandate as malformed (v1 is THE Mandate version)", () => {
     const files = makeRawFolder();
     files.set(
-      "tracks/release/mandates/v1.json",
-      new TextEncoder().encode(JSON.stringify({ kind: "Mandate", version: 1, mandateId: "old" })),
+      "tracks/release/mandates/wrong-version.json",
+      new TextEncoder().encode(JSON.stringify({ kind: "Mandate", version: 2, mandateId: "old" })),
     );
     const folder = parseMaintainersFolder({ files });
     const mm = folder.tracks[0]!.malformedMandates;
     expect(mm).toHaveLength(1);
-    expect(mm[0]!.reason).toBe("not a version-2 Mandate");
+    expect(mm[0]!.reason).toBe("not a version-1 Mandate");
     expect(folder.tracks[0]!.mandates).toHaveLength(1);
   });
 
   it("sorts mandates by issuedAt", () => {
     const alice = kp(1);
-    const m1 = mkV2({
+    const m1 = mk({
       id: "m1-0000-0000-0000-000000000001",
       holder: alice.pubKey,
       issuedAt: "2026-02-01T00:00:00Z",
@@ -82,7 +82,7 @@ describe("parseMaintainersFolder (v2)", () => {
       signedBy: alice.pubKey,
       signWith: [alice.privKey],
     });
-    const m2 = mkV2({
+    const m2 = mk({
       id: "m2-0000-0000-0000-000000000002",
       holder: alice.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",

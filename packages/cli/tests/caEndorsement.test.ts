@@ -4,8 +4,8 @@
  * The emitted envelope is still a v1 `CaEndorsement` (that type is
  * unchanged by the v2 model — only the Mandate/policy authority path
  * moved). We cross-check end to end against the **v2** verifier: a
- * ca-track from-scratch (root) `MandateV2` → `verifyMandateChainFromPin`
- * → `verifyCaEndorsementsV2` / `authorizedCaKeysV2`. The CLI must emit a
+ * ca-track from-scratch (root) `Mandate` → `verifyMandateChainFromPin`
+ * → `verifyCaEndorsements` / `authorizedCaKeys`. The CLI must emit a
  * lease the §9 link-3 chokepoint accepts at the verifier's clock and
  * that authorizes exactly the hot CA pubkey. The YubiKey-PIV path must
  * be byte-identical to the hex path (§11.1).
@@ -16,22 +16,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-  authorizedCaKeysV2,
+  authorizedCaKeys,
   canonicalCaEndorsement,
   generateKeypair,
   mandatePinHash,
   sign,
   signCaEndorsement,
-  signMandateV2,
+  signMandate,
   verify,
-  verifyCaEndorsementsV2,
+  verifyCaEndorsements,
   verifyMandateChainFromPin,
-  type MandateV2,
+  type Mandate,
 } from "@maintainers/protocol";
 import { buildCaEndorsement } from "../src/commands/caEndorsement.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
-import { writeMandateV2 } from "../src/lib/store.js";
+import { writeMandate } from "../src/lib/store.js";
 import type { PivTransport } from "../src/lib/keysource.js";
 
 function keypair(seedByte: number) {
@@ -54,10 +54,10 @@ const NOW = new Date("2026-05-17T12:00:00Z");
 
 /** A ca-track from-scratch (root) v2 mandate self-signed by `maintainer`
  *  as the cold authority — long-lived so it is the live authority at NOW. */
-function caRootMandate(maintainer: { pubKey: string; privKey: string }): MandateV2 {
-  const unsigned: Omit<MandateV2, "signatures"> = {
+function caRootMandate(maintainer: { pubKey: string; privKey: string }): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
     kind: "Mandate",
-    version: 2,
+    version: 1,
     mandateId: "ca-root-0000-4000-8000-000000000000",
     track: "ca",
     holder: maintainer.pubKey,
@@ -71,7 +71,7 @@ function caRootMandate(maintainer: { pubKey: string; privKey: string }): Mandate
     project: { name: "flagship", contact: "harry@flagship.services", tracks: ["ca"] },
     signedBy: maintainer.pubKey,
   };
-  return signMandateV2(unsigned, [{ privKey: maintainer.privKey }]);
+  return signMandate(unsigned, [{ privKey: maintainer.privKey }]);
 }
 
 /** The verified v2 ca chain anchored at the root's own pin. */
@@ -107,11 +107,11 @@ describe("buildCaEndorsement", () => {
     expect(verify(e.signatures[0]!.sig, canonicalCaEndorsement(e), maintainer.pubKey)).toBe(true);
 
     const caChain = caChainOf(maintainer);
-    const result = verifyCaEndorsementsV2([e], caChain, NOW);
+    const result = verifyCaEndorsements([e], caChain, NOW);
     expect(result.validEndorsements).toHaveLength(1);
     expect(result.rejections).toHaveLength(0);
     expect(result.currentCaPubkey).toBe(hotCa.pubKey);
-    expect(authorizedCaKeysV2([e], caChain, NOW)).toEqual([hotCa.pubKey]);
+    expect(authorizedCaKeys([e], caChain, NOW)).toEqual([hotCa.pubKey]);
   });
 
   it("a lapsed lease is rejected at the verifier's clock (fail-closed)", async () => {
@@ -129,7 +129,7 @@ describe("buildCaEndorsement", () => {
     });
     const caChain = caChainOf(maintainer);
     const later = new Date("2026-06-30T00:00:00Z"); // well past notAfter
-    expect(authorizedCaKeysV2([e], caChain, later)).toEqual([]);
+    expect(authorizedCaKeys([e], caChain, later)).toEqual([]);
   });
 
   it("an empty/absent pin ⇒ no-pin ⇒ fail-closed (no CA key is authorized)", async () => {
@@ -149,7 +149,7 @@ describe("buildCaEndorsement", () => {
     // empty baked pin ⇒ rootError "no-pin" ⇒ empty chain ⇒ reject all.
     const noPin = verifyMandateChainFromPin("", [root]);
     expect(noPin.rootError).toBe("no-pin");
-    expect(authorizedCaKeysV2([e], noPin, NOW)).toEqual([]);
+    expect(authorizedCaKeys([e], noPin, NOW)).toEqual([]);
   });
 
   it("YubiKey-PIV (injected token) is byte-identical to the file: path", async () => {
@@ -226,7 +226,7 @@ describe("ca-endorsement dispatch (e2e)", () => {
     fs.writeFileSync(keyFile, maintainer.privKey);
     // A real ca-track v2 root mandate on disk so the signer IS the
     // on-disk authority (the advisory must NOT fire).
-    writeMandateV2(root, caRootMandate(maintainer));
+    writeMandate(root, caRootMandate(maintainer));
 
     const lines: string[] = [];
     const code = await dispatch(

@@ -143,7 +143,7 @@ export interface CaEndorsement {
  * v1 `of: "anyAuthorizedSigner" | Pubkey[]` ambiguity is gone — the rule
  * is fully self-contained inside the signed mandate.
  */
-export interface ApprovalRuleV2 {
+export interface ApprovalRule {
   kind: "threshold";
   /** distinct `successors` signatures required to authorise the NEXT mandate. */
   threshold: number;
@@ -158,9 +158,9 @@ export interface MandateProject {
   tracks?: string[];
 }
 
-export interface MandateV2 {
+export interface Mandate {
   kind: "Mandate";
-  version: 2;
+  version: 1;
   mandateId: Uuid;
   track: string;
   /** operational authority for the track (signs ReleaseEndorsement / CaEndorsement). */
@@ -170,7 +170,7 @@ export interface MandateV2 {
   /** the authorised signer set for the NEXT mandate (K+1). */
   successors: Pubkey[];
   /** how many distinct `successors` signatures K+1 needs. */
-  approvalRule: ApprovalRuleV2;
+  approvalRule: ApprovalRule;
   /** K+1.successors.length MUST be >= this (anti-rubber-hose floor). */
   minSuccessors: number;
   /** (K+1.expiresAt - K+1.issuedAt) seconds MUST be <= this. */
@@ -186,11 +186,11 @@ export interface MandateV2 {
 // `Envelope` is the generic storage-adapter union (the §6 StorageAdapter
 // passes the parsed envelope alongside the raw bytes so an adapter can
 // enforce per-envelope policy). It is NOT the trust path — that is
-// pin-anchored and self-contained (canonicalMandateV2 / signMandateV2 /
+// pin-anchored and self-contained (canonicalMandate / signMandate /
 // verifyMandateChainFromPin). With v1 removed (c4.5e) the mandate member
-// is `MandateV2`, the only mandate envelope that now exists.
+// is `Mandate`, the only mandate envelope that now exists.
 export type Envelope =
-  | MandateV2
+  | Mandate
   | KeyFile
   | KeyRedirect
   | EmailRotation

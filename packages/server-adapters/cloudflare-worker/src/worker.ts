@@ -23,7 +23,7 @@ import {
 import type {
   KeyFile,
   KeyRedirect,
-  MandateV2,
+  Mandate,
 } from "@maintainers/protocol";
 
 export interface Env {
@@ -398,7 +398,7 @@ async function fetchMaintainersState(
 ): Promise<RepoState> {
   // v2: there is NO policy.json (root or track) — the succession rule
   // is folded into each mandate.
-  const tracks = new Map<string, MandateV2[]>();
+  const tracks = new Map<string, Mandate[]>();
   const keyFiles = new Map<string, KeyFile>();
 
   // Discover tracks.
@@ -408,13 +408,13 @@ async function fetchMaintainersState(
     const trackName = dir.name;
     // Walk mandates/, keep only well-shaped v2 mandates.
     const mandateEntries = await ghListDir(repo, `.maintainers/tracks/${trackName}/mandates`, branch, pat);
-    const fileBytes = new Map<string, MandateV2>();
+    const fileBytes = new Map<string, Mandate>();
     for (const f of mandateEntries) {
       if (f.type !== "file" || !f.name.endsWith(".json")) continue;
       const b = await ghReadFile(repo, f.path, branch, pat);
       if (!b) continue;
-      const parsed = parseJsonOrNull(b) as MandateV2 | null;
-      if (parsed && parsed.kind === "Mandate" && parsed.version === 2) {
+      const parsed = parseJsonOrNull(b) as Mandate | null;
+      if (parsed && parsed.kind === "Mandate" && parsed.version === 1) {
         fileBytes.set(f.path, parsed);
       }
     }

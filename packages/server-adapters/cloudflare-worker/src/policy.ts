@@ -32,7 +32,7 @@
  */
 
 import {
-  canonicalMandateV2,
+  canonicalMandate,
   canonicalKeyFile,
   canonicalKeyRedirect,
   canonicalEmailRotation,
@@ -43,8 +43,8 @@ import {
   verify,
   bytesToHex,
   verifyMandateChainFromPin,
-  currentAuthorityV2,
-  type MandateV2,
+  currentAuthority,
+  type Mandate,
   type KeyFile,
   type KeyRedirect,
   type EmailRotation,
@@ -57,12 +57,11 @@ import {
 export const MAINTAINERS_PREFIX = ".maintainers/";
 
 /**
- * The worker's envelope union. Deliberately NOT the protocol `Envelope`
- * (which still carries the v1 `Mandate` member until c4.5e): the worker
- * is v2-only, so a Mandate here is always a `MandateV2`.
+ * The worker's envelope union. There is one Mandate envelope shape
+ * (`Mandate`); the worker accepts only it.
  */
 type WorkerEnvelope =
-  | MandateV2
+  | Mandate
   | KeyFile
   | KeyRedirect
   | EmailRotation
@@ -82,7 +81,7 @@ export interface RepoState {
    * signed `issuedAt` + the forward verifier's predecessor checks).
    * There is NO policy.json in v2 (root or track).
    */
-  tracks: Map<string, MandateV2[]>;
+  tracks: Map<string, Mandate[]>;
   /** Known KeyFiles indexed by pubkey. */
   keyFiles: Map<Pubkey, KeyFile>;
 }
@@ -177,11 +176,11 @@ function parseEnvelope(raw: unknown): ParsedEnvelope {
   const version = obj["version"];
   switch (kind) {
     case "Mandate":
-      // v2 is THE Mandate version; v1 is retired.
-      if (version !== 2) {
+      // v1 is THE (and only) Mandate version.
+      if (version !== 1) {
         return { ok: false, status: 400, reason: "mandate-version-unsupported" };
       }
-      return shapeMandateV2(obj);
+      return shapeMandate(obj);
     case "KeyFile":
       if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeKeyFile(obj);
@@ -205,7 +204,7 @@ function parseEnvelope(raw: unknown): ParsedEnvelope {
   }
 }
 
-function shapeMandateV2(obj: Record<string, unknown>): ParsedEnvelope {
+function shapeMandate(obj: Record<string, unknown>): ParsedEnvelope {
   if (
     typeof obj["mandateId"] !== "string" ||
     typeof obj["track"] !== "string" ||
@@ -240,7 +239,7 @@ function shapeMandateV2(obj: Record<string, unknown>): ParsedEnvelope {
       return { ok: false, status: 400, reason: "mandate-signatures-shape" };
     }
   }
-  return { ok: true, envelope: obj as unknown as MandateV2 };
+  return { ok: true, envelope: obj as unknown as Mandate };
 }
 
 function shapeKeyFile(obj: Record<string, unknown>): ParsedEnvelope {
@@ -336,7 +335,7 @@ function shapeCaEndorsement(obj: Record<string, unknown>): ParsedEnvelope {
 function canonicalBytesFor(e: WorkerEnvelope): Uint8Array {
   switch (e.kind) {
     case "Mandate":
-      return canonicalMandateV2(e);
+      return canonicalMandate(e);
     case "KeyFile":
       return canonicalKeyFile(e);
     case "KeyRedirect":
@@ -417,7 +416,7 @@ function checkAuthority(
  * anchor for "is this a legitimate continuation of what's there".
  */
 function checkMandateAuthority(
-  m: MandateV2,
+  m: Mandate,
   state: RepoState,
 ): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
   const existing = state.tracks.get(m.track) ?? [];
@@ -468,7 +467,7 @@ function checkEndorsementAuthority(
     mandatePinHash(releaseMandates[0]!),
     releaseMandates,
   );
-  const authority = currentAuthorityV2(chain, new Date(Date.parse(e.issuedAt)));
+  const authority = currentAuthority(chain, new Date(Date.parse(e.issuedAt)));
   if (!authority) {
     return { ok: false, status: 403, reason: "no-active-release-authority" };
   }
@@ -510,7 +509,7 @@ function checkCaEndorsementAuthority(
   }
   const chain = verifyMandateChainFromPin(mandatePinHash(caMandates[0]!), caMandates);
   // NOW, not issuedAt — the entire CaEndorsement security argument.
-  const authority = currentAuthorityV2(chain, now);
+  const authority = currentAuthority(chain, now);
   if (!authority) {
     return { ok: false, status: 403, reason: "no-active-ca-authority" };
   }
@@ -589,7 +588,7 @@ export function summarizeState(state: RepoState, now: Date): RepoSummary {
       continue;
     }
     const chain = verifyMandateChainFromPin(mandatePinHash(mandates[0]!), mandates);
-    const current = currentAuthorityV2(chain, now);
+    const current = currentAuthority(chain, now);
     const last = chain.validMandates[chain.validMandates.length - 1];
 
     tracks.push({
