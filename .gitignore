@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 .vitest-cache/
+
+# npm-pack portable-artifact staging (prepack regenerates from the
+# canonical repo-root conformance/ + docs/spec/v1.md; never committed)
+packages/protocol/conformance/
+packages/protocol/SPEC.md
