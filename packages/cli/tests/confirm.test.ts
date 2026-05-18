@@ -4,6 +4,10 @@
  * non-interactive bypass; with neither `--yes` nor an injected confirm
  * the gate fails CLOSED (never silently auto-proceeds). The banner +
  * byte/diff preview are always shown first.
+ *
+ * LOCKED Phase-2 v2: genesis/mandate/takeover collapsed into the ONE
+ * `upsert-mandate` verb — the ceremony kinds exercised here are
+ * `upsert-mandate` / `ca-endorsement` / `create-key`.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -16,7 +20,6 @@ import {
   confirmPhrase,
   type ConfirmFn,
 } from "../src/lib/ceremony.js";
-import { CliError } from "../src/lib/args.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
 
@@ -28,9 +31,8 @@ function keypair(seedByte: number) {
 
 describe("confirmPhrase", () => {
   it("forces a ceremony-specific word", () => {
-    expect(confirmPhrase("genesis")).toBe("GENESIS");
-    expect(confirmPhrase("mandate")).toBe("MANDATE");
-    expect(confirmPhrase("takeover")).toBe("TAKEOVER");
+    expect(confirmPhrase("upsert-mandate")).toBe("UPSERT-MANDATE");
+    expect(confirmPhrase("create-key")).toBe("CREATE-KEY");
     expect(confirmPhrase("ca-endorsement")).toBe("CA-LEASE");
   });
 });
@@ -39,7 +41,7 @@ describe("confirmGate", () => {
   it("--yes skips the prompt (and says so)", async () => {
     const lines: string[] = [];
     const confirm = vi.fn<ConfirmFn>();
-    await confirmGate("genesis", true, confirm, (l) => lines.push(l));
+    await confirmGate("upsert-mandate", true, confirm, (l) => lines.push(l));
     expect(confirm).not.toHaveBeenCalled();
     expect(lines.join("\n")).toMatch(/--yes.*skipping/);
   });
@@ -52,14 +54,14 @@ describe("confirmGate", () => {
 
   it("confirm returning false aborts (nothing proceeds)", async () => {
     await expect(
-      confirmGate("takeover", false, async () => false, () => {}),
+      confirmGate("upsert-mandate", false, async () => false, () => {}),
     ).rejects.toThrow(/aborted at the confirmation/);
   });
 
   it("confirm gets the right phrase and true proceeds", async () => {
     let seen: string | undefined;
     await confirmGate(
-      "mandate",
+      "upsert-mandate",
       false,
       async ({ phrase }) => {
         seen = phrase;
@@ -67,7 +69,7 @@ describe("confirmGate", () => {
       },
       () => {},
     );
-    expect(seen).toBe("MANDATE");
+    expect(seen).toBe("UPSERT-MANDATE");
   });
 });
 
@@ -83,14 +85,16 @@ describe("the gate is wired into the real command path", () => {
     };
   }
 
-  function genesisArgs(root: string, pub: string, priv: string, extra: string[]) {
+  function fromScratchArgs(root: string, priv: string, extra: string[]) {
+    // from-scratch upsert-mandate: signer self-signs (holder defaults to
+    // the signing key); --project-name is required for an origin mandate.
     return parseArgs([
-      "genesis",
+      "upsert-mandate",
       "--track", "ca",
       "--duration", "365d",
-      "--holder-key", `file:${pub}`,
       "--signing-key", `file:${priv}`,
-      "--output", root,
+      "--project-name", "flagship",
+      "--path", root,
       ...extra,
     ]);
   }
@@ -99,21 +103,19 @@ describe("the gate is wired into the real command path", () => {
     const m = keypair(7);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cfm-fc-"));
     try {
-      const pub = path.join(tmp, "m.pub");
       const priv = path.join(tmp, "m.priv");
-      fs.writeFileSync(pub, m.pubKey);
       fs.writeFileSync(priv, m.privKey);
       const lines: string[] = [];
       // env.confirm undefined ⇒ fail-closed (the bin shim's defaultEnv
       // would supply ttyConfirm; here we model a non-TTY/no-confirm env)
       const code = await dispatch(
-        genesisArgs(path.join(tmp, ".maintainers"), pub, priv, []),
+        fromScratchArgs(path.join(tmp, ".maintainers"), priv, []),
         mkEnv(lines),
       );
       expect(code).toBe(1);
       const out = lines.join("\n");
-      expect(out).toContain("GENESIS — you are creating the ROOT OF TRUST");
-      expect(out).toContain("REVIEW — genesis"); // preview was shown
+      expect(out).toContain("FROM-SCRATCH ORIGIN"); // the loud origin warning
+      expect(out).toContain("REVIEW — upsert-mandate"); // preview was shown
       expect(out).toMatch(/ERR error:.*needs interactive confirmation/);
       expect(fs.existsSync(path.join(tmp, ".maintainers", "tracks"))).toBe(false);
     } finally {
@@ -125,13 +127,11 @@ describe("the gate is wired into the real command path", () => {
     const m = keypair(8);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cfm-no-"));
     try {
-      const pub = path.join(tmp, "m.pub");
       const priv = path.join(tmp, "m.priv");
-      fs.writeFileSync(pub, m.pubKey);
       fs.writeFileSync(priv, m.privKey);
       const lines: string[] = [];
       const code = await dispatch(
-        genesisArgs(path.join(tmp, ".maintainers"), pub, priv, []),
+        fromScratchArgs(path.join(tmp, ".maintainers"), priv, []),
         mkEnv(lines, async () => false),
       );
       expect(code).toBe(1);
@@ -146,25 +146,23 @@ describe("the gate is wired into the real command path", () => {
     const m = keypair(9);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cfm-ok-"));
     try {
-      const pub = path.join(tmp, "m.pub");
       const priv = path.join(tmp, "m.priv");
-      fs.writeFileSync(pub, m.pubKey);
       fs.writeFileSync(priv, m.privKey);
       const lines: string[] = [];
       let askedPhrase = "";
       const code = await dispatch(
-        genesisArgs(path.join(tmp, ".maintainers"), pub, priv, []),
+        fromScratchArgs(path.join(tmp, ".maintainers"), priv, []),
         mkEnv(lines, async ({ phrase }) => {
           askedPhrase = phrase;
           return true;
         }),
       );
       expect(code).toBe(0);
-      expect(askedPhrase).toBe("GENESIS");
+      expect(askedPhrase).toBe("UPSERT-MANDATE");
       const out = lines.join("\n");
-      expect(out).toContain("REVIEW — genesis");
-      expect(out).toContain("wrote genesis mandate");
-      expect(out).toContain("ONLY recovery"); // successor guidance
+      expect(out).toContain("REVIEW — upsert-mandate");
+      expect(out).toContain("wrote from-scratch (root) mandate");
+      expect(out).toContain("RECORD the PIN"); // bake-per-surface guidance
       expect(
         fs.existsSync(path.join(tmp, ".maintainers", "tracks/ca/mandates")),
       ).toBe(true);

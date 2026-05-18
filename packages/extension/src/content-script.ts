@@ -70,8 +70,6 @@ async function tick(): Promise<void> {
   try {
     const data = await fetchMaintainers(repo, deps);
     state = computeOverlayState({
-      policy: data.policy,
-      trackPolicies: data.trackPolicies,
       mandates: data.mandates,
       keys: data.keys,
       endorsements: data.endorsements,

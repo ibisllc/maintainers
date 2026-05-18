@@ -1,0 +1,82 @@
+{
+  "name": "neg-7-over-max-duration",
+  "description": "K+1's window exceeds K.maxDurationSeconds ⇒ forward step rejects 'over-max-duration' ⇒ reject.",
+  "input": {
+    "pin": "44f6da4aeb9eb45a3429b954de6d9268aa81da338384b890a3d0e3e4cf4b29a9",
+    "now": "2026-05-01T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000000",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-03-02T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+            "6b79c57e6a095239282c04818e96112f3f03a4001ba97a564c23852a3f1ea5fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 2592000,
+          "defaultDurationSeconds": 5184000,
+          "project": {
+            "name": "conformance-fixture",
+            "contact": "security@example.org",
+            "tracks": [
+              "release",
+              "ca"
+            ]
+          },
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "16a1d8b767d797a861907ad01d774a212a90c9f1d815ca09bec04450d7bd9857b9e835437095143b4b496e40a3327fc75a7981fd0bfd95a273906a613905140d"
+            }
+          ]
+        },
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000001",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-02-15T00:00:00Z",
+          "expiresAt": "2026-04-16T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "62913d524da1f41f0b1bfb59e14021e637ab4f6c858add770f6e88ce7c9112ad95e3cf675f45fa5461d2bed7cc320fab62ef4d1bb2447411dd5cdf6884c7cc04"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "over-max-duration",
+    "subject": "mandate-chain",
+    "track": "release"
+  }
+}

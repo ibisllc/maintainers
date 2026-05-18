@@ -83,8 +83,6 @@ async function render(force: boolean): Promise<void> {
 
   const data = await fetchMaintainers(repo, deps);
   const state = computeOverlayState({
-    policy: data.policy,
-    trackPolicies: data.trackPolicies,
     mandates: data.mandates,
     keys: data.keys,
     endorsements: data.endorsements,
@@ -96,13 +94,12 @@ async function render(force: boolean): Promise<void> {
 function renderState(main: HTMLElement, state: OverlayState, repo: RepoLocation): void {
   for (const a of state.alarms) main.appendChild(renderAlarm(a));
 
-  if (!state.policyPresent) {
-    main.appendChild(textBlock("empty", "No .maintainers/policy.json on this repo."));
+  if (state.tracks.length === 0) {
+    main.appendChild(textBlock("empty", "No .maintainers/ data on this repo."));
     return;
   }
-  if (state.tracks.length === 0) {
-    main.appendChild(textBlock("empty", "Policy declares zero tracks."));
-    return;
+  if (!state.policyPresent) {
+    main.appendChild(textBlock("empty", "No verifiable mandate chain on any track."));
   }
   for (const t of state.tracks) {
     const wrap = el("div", { className: "track" });

@@ -1,0 +1,90 @@
+{
+  "name": "neg-8-endorsement-gap",
+  "description": "A ReleaseEndorsement whose previousReleaseId/previousCommitHash do not match the prior accepted endorsement (a missing/substituted intermediate) ⇒ verifyChainOfEndorsements rejects 'predecessor-mismatch'.",
+  "input": {
+    "pin": "c452ad9cf2fd2943d8c9c52785dc7eb281bc869fe3b29cd48dc611832190fac1",
+    "now": "2026-03-02T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-0000000000e8",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2027-01-01T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "24800616190601d1d893f385e1cac0e5241bd6b35b7bf1eca820eb6b324b1cb995b09ce25e316a8ccd9b4478facfa8f605db18ecde201cba135eceff78154102"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [
+      {
+        "kind": "ReleaseEndorsement",
+        "version": 1,
+        "releaseId": "r1",
+        "semverTag": "v0.1.0",
+        "commitHash": "0101010101010101010101010101010101010101",
+        "previousReleaseId": null,
+        "previousCommitHash": null,
+        "intermediateCommits": [],
+        "intermediateMerkleRoot": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "endorsedNotes": null,
+        "issuedAt": "2026-02-01T00:00:00Z",
+        "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+        "signatures": [
+          {
+            "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+            "sig": "7c2e65a7e2326551d9fb47b42deea200f2a949b4d2bc6082201c91f46b0c52e65601c855808e2eff91a3a2976cd7ef932cfd8bb5187306cd5f494d11a4b3030c"
+          }
+        ]
+      },
+      {
+        "kind": "ReleaseEndorsement",
+        "version": 1,
+        "releaseId": "r3",
+        "semverTag": "v0.3.0",
+        "commitHash": "0303030303030303030303030303030303030303",
+        "previousReleaseId": "r2-MISSING",
+        "previousCommitHash": "0202020202020202020202020202020202020202",
+        "intermediateCommits": [
+          "0101010101010101010101010101010101010101"
+        ],
+        "intermediateMerkleRoot": "9b8f65607d891ebc9ee18add4f866748456ebce2d8f0bd9c9a8e508871617f27",
+        "endorsedNotes": null,
+        "issuedAt": "2026-03-01T00:00:00Z",
+        "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+        "signatures": [
+          {
+            "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+            "sig": "06e019cb7123114a517e9aef82b1351aeaacddbcb42a644252a6a1cf56dddbfbdef2e0d21f97a25a9fec3692069ef139cddf8751b203b3499f0d37c38687fa06"
+          }
+        ]
+      }
+    ],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "predecessor-mismatch",
+    "subject": "release-endorsement",
+    "track": "release"
+  }
+}

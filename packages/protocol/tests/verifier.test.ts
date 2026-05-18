@@ -1,383 +1,484 @@
 /**
- * Verifier integration tests: build sequences of mandates and assert
- * the verifier accepts/rejects them per spec §4.
+ * Mandate v2 verify-forward-from-pin (LOCKED Phase-2 v2). This file is
+ * the security assurance for the load-bearing trust path: it pins the
+ * happy path AND every fail-closed negative the v2 model promises
+ * (absent/forked pin, pin-not-in-log, self-renewal-attempt,
+ * sub-threshold signers, under-minSuccessors, over-maxDuration,
+ * rolled-back/tampered history) plus totality (never throws on
+ * adversarial input).
  */
 import { describe, expect, it } from "vitest";
 import { generateKeypair } from "../src/crypto.js";
-import { signMandate } from "../src/signing.js";
-import { currentAuthority, lastExpiredMandate, verifyTrack } from "../src/verifier.js";
-import type { Mandate, TrackPolicy } from "../src/types.js";
+import { canonicalMandate, mandatePinHash } from "../src/canonical.js";
+import { signMandate, signMandateWith, privKeySigner } from "../src/signing.js";
+import {
+  verifyMandateChainFromPin,
+  currentAuthority,
+} from "../src/verifier.js";
+import type { Mandate } from "../src/types.js";
 
-function keypair(seedByte: number): { privKey: string; pubKey: string } {
+function kp(seedByte: number): { privKey: string; pubKey: string } {
   const seed = new Uint8Array(32);
   seed[0] = seedByte;
   return generateKeypair(seed);
 }
 
-function mkPolicy(threshold = 1): TrackPolicy {
-  return {
-    track: "release",
-    defaultMandateDuration: "60d",
-    approvalRule: { kind: "threshold", threshold, of: "anyAuthorizedSigner" },
-  };
-}
+const founder = kp(1);
+const backup = kp(2);
+const a = kp(3);
+const b = kp(4);
+const c = kp(5);
+const eve = kp(99);
 
-function mkMandate(opts: {
+const DAY = 86400;
+
+interface MkOpts {
   id: string;
+  track?: string;
   holder: string;
-  successors: string[];
-  signers: string[];
   issuedAt: string;
   expiresAt: string;
-  signedBy?: string;
-  track?: string;
-  privKeys: string[];
-}): Mandate {
-  return signMandate(
-    {
-      kind: "Mandate",
-      version: 1,
-      mandateId: opts.id,
-      track: opts.track ?? "release",
-      holder: opts.holder,
-      issuedAt: opts.issuedAt,
-      expiresAt: opts.expiresAt,
-      successors: opts.successors,
-      signedBy: opts.signedBy ?? opts.holder,
-    },
-    opts.privKeys.map((privKey) => ({ privKey })),
-  );
+  successors: string[];
+  threshold?: number;
+  minSuccessors?: number;
+  maxDurationSeconds?: number;
+  defaultDurationSeconds?: number;
+  project?: Mandate["project"];
+  signedBy: string;
+  signWith: string[]; // privKeys
 }
 
-describe("verifyTrack — genesis", () => {
-  it("accepts a self-signed genesis mandate", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-05-15T12:00:00Z",
-      expiresAt: "2026-07-14T12:00:00Z",
-      privKeys: [alice.privKey],
+function mk(o: MkOpts): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
+    kind: "Mandate",
+    version: 1,
+    mandateId: o.id,
+    track: o.track ?? "release",
+    holder: o.holder,
+    issuedAt: o.issuedAt,
+    expiresAt: o.expiresAt,
+    successors: o.successors,
+    approvalRule: { kind: "threshold", threshold: o.threshold ?? 1 },
+    minSuccessors: o.minSuccessors ?? 1,
+    maxDurationSeconds: o.maxDurationSeconds ?? 60 * DAY,
+    defaultDurationSeconds: o.defaultDurationSeconds ?? 60 * DAY,
+    ...(o.project ? { project: o.project } : {}),
+    signedBy: o.signedBy,
+  };
+  return signMandate(unsigned, o.signWith.map((privKey) => ({ privKey })));
+}
+
+// A from-scratch (root) mandate: self-signed by its holder, project set.
+function root(over: Partial<MkOpts> = {}): Mandate {
+  return mk({
+    id: "00000000-0000-4000-8000-000000000000",
+    holder: founder.pubKey,
+    issuedAt: "2026-01-01T00:00:00Z",
+    expiresAt: "2026-03-02T00:00:00Z", // 60d
+    successors: [founder.pubKey, backup.pubKey],
+    threshold: 1,
+    minSuccessors: 1,
+    maxDurationSeconds: 60 * DAY,
+    project: { name: "flagship", contact: "harry@flagship.services", tracks: ["release", "ca"] },
+    signedBy: founder.pubKey,
+    signWith: [founder.privKey],
+    ...over,
+  });
+}
+
+describe("verify-forward-from-pin — happy path", () => {
+  it("solo-founder renewal chain; currentAuthority tracks the window", () => {
+    const r = root();
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [founder.pubKey, backup.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey], // founder ∈ root.successors, threshold 1 ⇒ valid
     });
-    const verified = verifyTrack("release", mkPolicy(), [genesis]);
-    expect(verified.validMandates).toHaveLength(1);
-    expect(verified.rejections).toHaveLength(0);
+    const pin = mandatePinHash(r);
+    const chain = verifyMandateChainFromPin(pin, [r, k1]);
+    expect(chain.rootError).toBeUndefined();
+    expect(chain.validMandates.map((m) => m.mandateId)).toEqual([r.mandateId, k1.mandateId]);
+    expect(chain.rejections).toEqual([]);
+
+    // before any mandate
+    expect(currentAuthority(chain, new Date("2025-12-31T00:00:00Z"))).toBeNull();
+    // inside root only
+    expect(currentAuthority(chain, new Date("2026-01-10T00:00:00Z"))?.mandate.mandateId).toBe(
+      r.mandateId,
+    );
+    // overlap: most-recent valid wins → k1
+    expect(currentAuthority(chain, new Date("2026-02-20T00:00:00Z"))?.mandate.mandateId).toBe(
+      k1.mandateId,
+    );
+    // inside k1 only
+    expect(currentAuthority(chain, new Date("2026-04-01T00:00:00Z"))?.holder).toBe(
+      founder.pubKey,
+    );
+    // after k1 expiry → fail closed
+    expect(currentAuthority(chain, new Date("2026-05-01T00:00:00Z"))).toBeNull();
   });
 
-  it("rejects a genesis not self-signed by holder", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [bob.pubKey],
-      issuedAt: "2026-05-15T12:00:00Z",
-      expiresAt: "2026-07-14T12:00:00Z",
-      signedBy: bob.pubKey,
-      privKeys: [bob.privKey],
+  it("L1 multi-pin: pinning at root vs at k1 both verify; same authority at now", () => {
+    const r = root();
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: backup.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [backup.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
     });
-    const verified = verifyTrack("release", mkPolicy(), [genesis]);
-    expect(verified.validMandates).toHaveLength(0);
-    expect(verified.rejections[0]?.reason).toBe("genesis-not-self-signed");
+    const k2 = mk({
+      id: "00000000-0000-4000-8000-000000000002",
+      holder: backup.pubKey,
+      issuedAt: "2026-04-10T00:00:00Z",
+      expiresAt: "2026-06-09T00:00:00Z",
+      successors: [backup.pubKey],
+      signedBy: backup.pubKey,
+      signWith: [backup.privKey], // backup ∈ k1.successors
+    });
+    const log = [r, k1, k2];
+    const now = new Date("2026-05-01T00:00:00Z");
+    const fromRoot = verifyMandateChainFromPin(mandatePinHash(r), log);
+    const fromK1 = verifyMandateChainFromPin(mandatePinHash(k1), log);
+    expect(fromRoot.validMandates.map((m) => m.mandateId)).toEqual([
+      r.mandateId,
+      k1.mandateId,
+      k2.mandateId,
+    ]);
+    expect(fromK1.validMandates.map((m) => m.mandateId)).toEqual([k1.mandateId, k2.mandateId]);
+    // The pin moved the floor but not the answer at `now`.
+    expect(currentAuthority(fromRoot, now)?.mandate.mandateId).toBe(k2.mandateId);
+    expect(currentAuthority(fromK1, now)?.mandate.mandateId).toBe(k2.mandateId);
   });
 
-  it("rejects a tampered signature", () => {
-    const alice = keypair(1);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [alice.pubKey],
-      issuedAt: "2026-05-15T12:00:00Z",
-      expiresAt: "2026-07-14T12:00:00Z",
-      privKeys: [alice.privKey],
+  it("2-of-3 threshold is satisfied by any two named successors", () => {
+    const r = root({
+      successors: [a.pubKey, b.pubKey, c.pubKey],
+      threshold: 2,
+      minSuccessors: 1,
     });
-    // Flip a single bit in the first signature
-    const sig = genesis.signatures[0]!.sig;
-    const tampered = sig.slice(0, -2) + (sig.slice(-2) === "00" ? "01" : "00");
-    const evil: Mandate = {
-      ...genesis,
-      signatures: [{ pubkey: genesis.signatures[0]!.pubkey, sig: tampered }],
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: a.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [a.pubKey],
+      signedBy: a.pubKey,
+      signWith: [a.privKey, b.privKey],
+    });
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.validMandates.length).toBe(2);
+  });
+});
+
+describe("L1 fail-closed: the pin is the floor", () => {
+  it("no baked pin ⇒ reject everything (#30 generalised)", () => {
+    const r = root();
+    const chain = verifyMandateChainFromPin("", [r]);
+    expect(chain.rootError).toBe("no-pin");
+    expect(chain.validMandates).toEqual([]);
+    expect(currentAuthority(chain, new Date("2026-01-10T00:00:00Z"))).toBeNull();
+  });
+
+  it("pin matches no mandate in the log ⇒ pin-not-in-log", () => {
+    const r = root();
+    const other = root({ id: "ffffffff-0000-4000-8000-000000000000" });
+    const chain = verifyMandateChainFromPin(mandatePinHash(other), [r]);
+    expect(chain.rootError).toBe("pin-not-in-log");
+    expect(chain.validMandates).toEqual([]);
+  });
+
+  it("forked/tampered pin: a mandate mutated post-signing no longer hashes to the pin", () => {
+    const r = root();
+    const pin = mandatePinHash(r);
+    const tampered: Mandate = { ...r, holder: eve.pubKey }; // signature now stale; hash differs
+    const chain = verifyMandateChainFromPin(pin, [tampered]);
+    expect(chain.rootError).toBe("pin-not-in-log");
+    expect(chain.validMandates).toEqual([]);
+  });
+
+  it("root with an invalid signature ⇒ root-signature-invalid", () => {
+    const r = root();
+    const pin = mandatePinHash(r); // pin is content-bound, so it still matches
+    const bad: Mandate = {
+      ...r,
+      signatures: [{ pubkey: founder.pubKey, sig: "00".repeat(64) }],
     };
-    const verified = verifyTrack("release", mkPolicy(), [evil]);
-    expect(verified.rejections[0]?.reason).toBe("signature-invalid");
+    const chain = verifyMandateChainFromPin(pin, [bad]);
+    expect(chain.rootError).toBe("root-signature-invalid");
+  });
+
+  it("root whose signedBy is not among its signatures ⇒ root-not-self-signed", () => {
+    // backup validly signs bytes that declare signedBy=founder.
+    const unsigned: Omit<Mandate, "signatures"> = {
+      kind: "Mandate",
+      version: 1,
+      mandateId: "00000000-0000-4000-8000-0000000000aa",
+      track: "release",
+      holder: founder.pubKey,
+      issuedAt: "2026-01-01T00:00:00Z",
+      expiresAt: "2026-03-02T00:00:00Z",
+      successors: [founder.pubKey],
+      approvalRule: { kind: "threshold", threshold: 1 },
+      minSuccessors: 1,
+      maxDurationSeconds: 60 * DAY,
+      defaultDurationSeconds: 60 * DAY,
+      signedBy: founder.pubKey,
+    };
+    const m = signMandate(unsigned, [{ privKey: backup.privKey }]); // signer ≠ signedBy
+    const chain = verifyMandateChainFromPin(mandatePinHash(m), [m]);
+    expect(chain.rootError).toBe("root-not-self-signed");
   });
 });
 
-describe("verifyTrack — renewal (active-window)", () => {
-  it("accepts a renewal signed by the current holder", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const renewal = mkMandate({
-      id: "g2",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
+describe("L3 one-rule: no self-renewal, threshold/minSucc/maxDur enforced", () => {
+  it("self-renewal-attempt: holder not in predecessor.successors ⇒ rejected", () => {
+    const r = root({ successors: [backup.pubKey], threshold: 1 }); // founder NOT a successor
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
       issuedAt: "2026-02-15T00:00:00Z",
       expiresAt: "2026-04-15T00:00:00Z",
-      privKeys: [alice.privKey],
+      successors: [backup.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey], // the holder trying to extend itself
     });
-    const verified = verifyTrack("release", mkPolicy(), [genesis, renewal]);
-    expect(verified.validMandates).toHaveLength(2);
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.validMandates.map((m) => m.mandateId)).toEqual([r.mandateId]);
+    expect(chain.rejections[0]?.reason).toBe("signer-not-in-successor-set");
   });
 
-  it("rejects an in-window mandate signed by a successor (not yet authorized)", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const premature = mkMandate({
-      id: "g2",
-      holder: bob.pubKey,
-      successors: [],
-      signers: [bob.pubKey],
-      signedBy: bob.pubKey,
-      issuedAt: "2026-02-15T00:00:00Z", // before genesis expires
+  it("sub-threshold signers ⇒ approval-threshold-unmet", () => {
+    const r = root({ successors: [a.pubKey, b.pubKey, c.pubKey], threshold: 2 });
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: a.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
       expiresAt: "2026-04-15T00:00:00Z",
-      privKeys: [bob.privKey],
+      successors: [a.pubKey],
+      signedBy: a.pubKey,
+      signWith: [a.privKey], // only 1 of the required 2
     });
-    const verified = verifyTrack("release", mkPolicy(), [genesis, premature]);
-    expect(verified.validMandates).toHaveLength(1);
-    expect(verified.rejections[0]?.reason).toBe("signer-not-authorized");
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.rejections[0]?.reason).toBe("approval-threshold-unmet");
+  });
+
+  it("under-minSuccessors ⇒ rejected", () => {
+    const r = root({ minSuccessors: 2, successors: [founder.pubKey, backup.pubKey] });
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [founder.pubKey], // only 1, need ≥ 2
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
+    });
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.rejections[0]?.reason).toBe("under-min-successors");
+  });
+
+  it("over-maxDuration ⇒ rejected", () => {
+    const r = root({ maxDurationSeconds: 30 * DAY });
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-16T00:00:00Z", // 60d > 30d cap
+      successors: [founder.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
+    });
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.rejections[0]?.reason).toBe("over-max-duration");
+  });
+
+  it("issued-before-predecessor ⇒ rejected", () => {
+    const r = root();
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2025-12-01T00:00:00Z", // before root.issuedAt
+      expiresAt: "2026-02-01T00:00:00Z",
+      successors: [founder.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
+    });
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.rejections[0]?.reason).toBe("issued-before-predecessor");
+  });
+
+  it("signedBy not among signatures ⇒ rejected", () => {
+    const r = root({ successors: [founder.pubKey, backup.pubKey] });
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [founder.pubKey],
+      signedBy: backup.pubKey, // claims backup, but only founder signed
+      signWith: [founder.privKey],
+    });
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1]);
+    expect(chain.rejections[0]?.reason).toBe("signed-by-not-in-signatures");
   });
 });
 
-describe("verifyTrack — takeover (after expiry)", () => {
-  it("accepts a takeover by a named successor after expiry", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
+describe("rolled-back / tampered history & totality", () => {
+  it("dropping an intermediate mandate is detected: the suffix no longer chains", () => {
+    const r = root({ successors: [founder.pubKey], threshold: 1, minSuccessors: 1 });
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: a.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [a.pubKey], // ONLY a may sign k2
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
     });
-    const takeover = mkMandate({
-      id: "g2",
-      holder: bob.pubKey,
-      successors: [],
-      signers: [bob.pubKey],
-      signedBy: bob.pubKey,
-      issuedAt: "2026-03-02T00:00:00Z",
-      expiresAt: "2026-05-02T00:00:00Z",
-      privKeys: [bob.privKey],
+    const k2 = mk({
+      id: "00000000-0000-4000-8000-000000000002",
+      holder: a.pubKey,
+      issuedAt: "2026-04-10T00:00:00Z",
+      expiresAt: "2026-06-09T00:00:00Z",
+      successors: [a.pubKey],
+      signedBy: a.pubKey,
+      signWith: [a.privKey], // valid only w.r.t. k1.successors, NOT root.successors
     });
-    const verified = verifyTrack("release", mkPolicy(), [genesis, takeover]);
-    expect(verified.validMandates).toHaveLength(2);
+    // Full chain: fine.
+    expect(
+      verifyMandateChainFromPin(mandatePinHash(r), [r, k1, k2]).validMandates.length,
+    ).toBe(3);
+    // Server drops k1 and serves only the suffix: k2's predecessor is
+    // now root, whose successors are [founder]; a ∉ that set ⇒ reject.
+    const rolledBack = verifyMandateChainFromPin(mandatePinHash(r), [r, k2]);
+    expect(rolledBack.validMandates.map((m) => m.mandateId)).toEqual([r.mandateId]);
+    expect(rolledBack.rejections[0]?.reason).toBe("signer-not-in-successor-set");
   });
 
-  it("rejects a takeover by a NON-successor", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const eve = keypair(99);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
+  it("duplicate mandateId is rejected (no double-spend in the log)", () => {
+    const r = root();
+    const k1 = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [founder.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
     });
-    const hostileTakeover = mkMandate({
-      id: "g2",
+    const dup = mk({
+      id: "00000000-0000-4000-8000-000000000001", // same id
       holder: eve.pubKey,
-      successors: [],
-      signers: [eve.pubKey],
-      signedBy: eve.pubKey,
-      issuedAt: "2026-03-02T00:00:00Z",
-      expiresAt: "2026-05-02T00:00:00Z",
-      privKeys: [eve.privKey],
+      issuedAt: "2026-03-01T00:00:00Z",
+      expiresAt: "2026-05-01T00:00:00Z",
+      successors: [founder.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
     });
-    const verified = verifyTrack("release", mkPolicy(), [genesis, hostileTakeover]);
-    expect(verified.validMandates).toHaveLength(1);
-    expect(verified.rejections[0]?.reason).toBe("signer-not-authorized");
-  });
-});
-
-describe("currentAuthority + lastExpiredMandate", () => {
-  it("returns the active holder when within the active window", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const verified = verifyTrack("release", mkPolicy(), [genesis]);
-    const authority = currentAuthority(verified, new Date("2026-02-01T00:00:00Z"));
-    expect(authority?.holder).toBe(alice.pubKey);
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, k1, dup]);
+    expect(chain.validMandates.map((m) => m.mandateId)).toEqual([r.mandateId, k1.mandateId]);
+    expect(chain.rejections[0]?.reason).toBe("duplicate-mandate-id");
   });
 
-  it("returns null when no mandate is active (post-expiry, pre-takeover)", () => {
-    const alice = keypair(1);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const verified = verifyTrack("release", mkPolicy(), [genesis]);
-    const authority = currentAuthority(verified, new Date("2026-04-01T00:00:00Z"));
-    expect(authority).toBeNull();
-    expect(lastExpiredMandate(verified, new Date("2026-04-01T00:00:00Z"))?.mandateId).toBe("g1");
-  });
-
-  it("returns the most recent active mandate when multiple overlap (chain of renewals)", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const g1 = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const g2 = mkMandate({
-      id: "g2",
-      holder: alice.pubKey,
-      successors: [bob.pubKey],
-      signers: [alice.pubKey],
-      issuedAt: "2026-02-15T00:00:00Z",
-      expiresAt: "2026-04-15T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const verified = verifyTrack("release", mkPolicy(), [g1, g2]);
-    // Between 2026-02-15 and 2026-03-01, both g1 and g2 are active.
-    // currentAuthority returns the most recent: g2.
-    const a = currentAuthority(verified, new Date("2026-02-20T00:00:00Z"));
-    expect(a?.mandate.mandateId).toBe("g2");
-  });
-});
-
-describe("verifyTrack — edge cases", () => {
-  it("rejects duplicate mandateId", () => {
-    const alice = keypair(1);
-    const m1 = mkMandate({
-      id: "dup",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    const m2 = mkMandate({
-      id: "dup",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [alice.pubKey],
+  it("cross-track mandates in the same log are ignored, not rejected", () => {
+    const r = root();
+    const caTrack = mk({
+      id: "00000000-0000-4000-8000-0000000000ca",
+      track: "ca",
+      holder: backup.pubKey,
       issuedAt: "2026-02-01T00:00:00Z",
       expiresAt: "2026-04-01T00:00:00Z",
-      privKeys: [alice.privKey],
+      successors: [backup.pubKey],
+      signedBy: backup.pubKey,
+      signWith: [backup.privKey],
     });
-    const verified = verifyTrack("release", mkPolicy(), [m1, m2]);
-    expect(verified.validMandates).toHaveLength(1);
-    expect(verified.rejections[0]?.reason).toBe("duplicate-mandate-id");
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, caTrack]);
+    expect(chain.validMandates.map((m) => m.mandateId)).toEqual([r.mandateId]);
+    expect(chain.rejections).toEqual([]);
   });
 
-  it("rejects mandate where expiresAt <= issuedAt", () => {
-    const alice = keypair(1);
-    const m = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [alice.pubKey],
-      issuedAt: "2026-03-01T00:00:00Z",
-      expiresAt: "2026-01-01T00:00:00Z", // before issuedAt
-      privKeys: [alice.privKey],
+  it("adversarial canonicalization input never throws — it is recorded as a rejection", () => {
+    const r = root({ successors: [founder.pubKey] });
+    const evil = mk({
+      id: "00000000-0000-4000-8000-000000000001",
+      holder: founder.pubKey,
+      issuedAt: "2026-02-15T00:00:00Z",
+      expiresAt: "2026-04-15T00:00:00Z",
+      successors: [founder.pubKey],
+      signedBy: founder.pubKey,
+      signWith: [founder.privKey],
     });
-    const verified = verifyTrack("release", mkPolicy(), [m]);
-    expect(verified.rejections[0]?.reason).toBe("expires-before-issuance");
-  });
-
-  it("rejects mandate with wrong track field", () => {
-    const alice = keypair(1);
-    const m = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [],
-      signers: [alice.pubKey],
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      track: "ca",
-      privKeys: [alice.privKey],
-    });
-    const verified = verifyTrack("release", mkPolicy(), [m]);
-    expect(verified.rejections[0]?.reason).toBe("wrong-track");
+    // inject a non-hex holder AFTER signing — same track, so it reaches
+    // the forward step; canonicalization throws internally and MUST be
+    // caught (totality), surfacing as a rejection, never an exception.
+    const poisoned: Mandate = { ...evil, holder: "zz" + "00".repeat(31) };
+    expect(() =>
+      verifyMandateChainFromPin(mandatePinHash(r), [r, poisoned]),
+    ).not.toThrow();
+    const chain = verifyMandateChainFromPin(mandatePinHash(r), [r, poisoned]);
+    expect(chain.validMandates.map((m) => m.mandateId)).toEqual([r.mandateId]);
+    expect(chain.rejections[0]?.reason).toBe("signature-invalid");
   });
 });
 
-describe("verifyTrack — race semantics (first-after-expiry wins)", () => {
-  it("only the FIRST takeover lands; a second by another successor is rejected", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const carol = keypair(3);
-    const genesis = mkMandate({
-      id: "g1",
-      holder: alice.pubKey,
-      successors: [bob.pubKey, carol.pubKey],
-      signers: [alice.pubKey],
+describe("canonical/pin/signing invariants", () => {
+  it("the pin is content-bound and signature-independent", () => {
+    const unsigned: Omit<Mandate, "signatures"> = {
+      kind: "Mandate",
+      version: 1,
+      mandateId: "00000000-0000-4000-8000-0000000000bb",
+      track: "release",
+      holder: founder.pubKey,
       issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2026-03-01T00:00:00Z",
-      privKeys: [alice.privKey],
-    });
-    // Bob takes over first (in canonical-log order)
-    const bobTakeover = mkMandate({
-      id: "g2",
-      holder: bob.pubKey,
-      successors: [bob.pubKey],
-      signers: [bob.pubKey],
-      signedBy: bob.pubKey,
-      issuedAt: "2026-03-02T00:00:00Z",
-      expiresAt: "2026-05-02T00:00:00Z",
-      privKeys: [bob.privKey],
-    });
-    // Carol tries later — bob is now holder; carol is not in bob's successors
-    const carolTakeover = mkMandate({
-      id: "g3",
-      holder: carol.pubKey,
-      successors: [],
-      signers: [carol.pubKey],
-      signedBy: carol.pubKey,
-      issuedAt: "2026-03-05T00:00:00Z",
-      expiresAt: "2026-05-05T00:00:00Z",
-      privKeys: [carol.privKey],
-    });
-    const verified = verifyTrack("release", mkPolicy(), [genesis, bobTakeover, carolTakeover]);
-    expect(verified.validMandates.map((m) => m.mandateId)).toEqual(["g1", "g2"]);
-    expect(verified.rejections[0]?.reason).toBe("signer-not-authorized");
+      expiresAt: "2026-03-02T00:00:00Z",
+      successors: [founder.pubKey, backup.pubKey],
+      approvalRule: { kind: "threshold", threshold: 1 },
+      minSuccessors: 1,
+      maxDurationSeconds: 60 * DAY,
+      defaultDurationSeconds: 60 * DAY,
+      signedBy: founder.pubKey,
+    };
+    const oneSig = signMandate(unsigned, [{ privKey: founder.privKey }]);
+    const twoSig = signMandate(unsigned, [
+      { privKey: founder.privKey },
+      { privKey: backup.privKey },
+    ]);
+    expect(mandatePinHash(oneSig)).toBe(mandatePinHash(twoSig));
+    expect(mandatePinHash(oneSig)).toBe(mandatePinHash(unsigned));
+  });
+
+  it("signMandateWith (external signer) is byte-identical to signMandate", async () => {
+    const unsigned: Omit<Mandate, "signatures"> = {
+      kind: "Mandate",
+      version: 1,
+      mandateId: "00000000-0000-4000-8000-0000000000cc",
+      track: "release",
+      holder: founder.pubKey,
+      issuedAt: "2026-01-01T00:00:00Z",
+      expiresAt: "2026-03-02T00:00:00Z",
+      successors: [founder.pubKey],
+      approvalRule: { kind: "threshold", threshold: 1 },
+      minSuccessors: 1,
+      maxDurationSeconds: 60 * DAY,
+      defaultDurationSeconds: 60 * DAY,
+      signedBy: founder.pubKey,
+    };
+    const sync = signMandate(unsigned, [{ privKey: founder.privKey }]);
+    const ext = await signMandateWith(unsigned, [privKeySigner(founder.privKey)]);
+    expect(ext.signatures).toEqual(sync.signatures);
+    expect(canonicalMandate(ext)).toEqual(canonicalMandate(sync));
+  });
+
+  it("successor order is part of canonical bytes (reordering changes the pin)", () => {
+    const r1 = root({ successors: [founder.pubKey, backup.pubKey] });
+    const r2 = root({ successors: [backup.pubKey, founder.pubKey] });
+    expect(mandatePinHash(r1)).not.toBe(mandatePinHash(r2));
   });
 });

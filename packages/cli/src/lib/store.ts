@@ -1,35 +1,37 @@
 /**
- * On-disk .maintainers/ folder I/O.
+ * On-disk .maintainers/ folder I/O (LOCKED Phase-2 v2 model).
  *
- * Matches §7 of the spec:
  *   .maintainers/
- *   ├── policy.json
  *   ├── keys/<email>.json
- *   ├── tracks/<track>/policy.json
- *   ├── tracks/<track>/mandates/<iso>-<summary>.json
+ *   ├── tracks/<track>/mandates/<iso>-<id>.json   (v2 Mandate only)
  *   ├── endorsements/<semver-tag>.json
- *   └── ca-endorsements/<iso>-<short-id>.json   (the weekly CA lease)
+ *   └── ca-endorsements/<iso>-<short-id>.json      (the weekly CA lease)
  *
- * The reader returns parsed envelopes; the writer canonicalizes filenames and
- * refuses to overwrite. Both sides are pure-fs and have no git awareness —
- * git is the canonical-log layer above us.
+ * There is **no `policy.json`** (root or per-track) in v2: the
+ * succession rule (approvalRule + successors + minSuccessors +
+ * maxDurationSeconds) lives INLINE in each `Mandate`, and the
+ * project-level contact/track-list rides the from-scratch (root)
+ * mandate's inline `project` field (L2). A v1 `Mandate` file
+ * (`version: 1`) is malformed for this store and is silently ignored,
+ * never parsed.
+ *
+ * The reader returns parsed v2 envelopes; the writer canonicalizes
+ * filenames and refuses to overwrite. Both sides are pure-fs and have no
+ * git awareness — git is the canonical-log layer above us.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
   CaEndorsement,
+  KeyFile,
   Mandate,
   ReleaseEndorsement,
-  RootPolicy,
-  TrackPolicy,
 } from "@maintainers/protocol";
 import { CliError } from "./args.js";
 
 export interface MaintainersStore {
   rootDir: string;
-  rootPolicy: RootPolicy | null;
-  trackPolicies: Map<string, TrackPolicy>;
   mandatesByTrack: Map<string, Mandate[]>;
   endorsements: ReleaseEndorsement[];
 }
@@ -37,40 +39,16 @@ export interface MaintainersStore {
 export function readStore(rootDir: string): MaintainersStore {
   const out: MaintainersStore = {
     rootDir,
-    rootPolicy: null,
-    trackPolicies: new Map(),
     mandatesByTrack: new Map(),
     endorsements: [],
   };
-
-  const rootPolicyPath = path.join(rootDir, "policy.json");
-  if (fs.existsSync(rootPolicyPath)) {
-    out.rootPolicy = readJson(rootPolicyPath) as RootPolicy;
-  }
 
   const tracksDir = path.join(rootDir, "tracks");
   if (fs.existsSync(tracksDir) && fs.statSync(tracksDir).isDirectory()) {
     for (const name of fs.readdirSync(tracksDir).sort()) {
       const trackDir = path.join(tracksDir, name);
       if (!fs.statSync(trackDir).isDirectory()) continue;
-      const policyPath = path.join(trackDir, "policy.json");
-      if (fs.existsSync(policyPath)) {
-        out.trackPolicies.set(name, readJson(policyPath) as TrackPolicy);
-      }
-      const mandatesDir = path.join(trackDir, "mandates");
-      if (fs.existsSync(mandatesDir) && fs.statSync(mandatesDir).isDirectory()) {
-        const files = fs.readdirSync(mandatesDir)
-          .filter((f) => f.endsWith(".json"))
-          .sort();
-        const arr: Mandate[] = [];
-        for (const f of files) {
-          const parsed = readJson(path.join(mandatesDir, f));
-          if (isMandate(parsed)) arr.push(parsed);
-        }
-        out.mandatesByTrack.set(name, arr);
-      } else {
-        out.mandatesByTrack.set(name, []);
-      }
+      out.mandatesByTrack.set(name, readMandates(rootDir, name));
     }
   }
 
@@ -97,16 +75,62 @@ export interface WrittenPath {
   relative: string;
 }
 
+/**
+ * Read a track's v2 mandate log (LOCKED Phase-2 v2). On-disk directory
+ * convention `tracks/<track>/mandates/*.json`, filename-sorted as the
+ * canonical-log substitute (real adapters get order from git), filtered
+ * to `version === 1`. There is NO `policy.json`: the succession policy
+ * is folded INTO each mandate. The published static-fetch layout
+ * (`tracks/<t>/log.json`) is a later (c5) distribution artifact; the
+ * CLI's authoring store stays file-per-mandate.
+ */
+export function readMandates(rootDir: string, track: string): Mandate[] {
+  const dir = path.join(rootDir, "tracks", track, "mandates");
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
+  const out: Mandate[] = [];
+  for (const f of files) {
+    const parsed = readJson(path.join(dir, f));
+    if (isMandate(parsed)) out.push(parsed);
+  }
+  return out;
+}
+
+/**
+ * Write a v2 mandate under `tracks/<track>/mandates/<compact-iso>-<id>.json`.
+ * Append-only (refuse-overwrite); the from-scratch (root) mandate and
+ * every successor are distinct files, by design.
+ */
 export function writeMandate(rootDir: string, m: Mandate): WrittenPath {
   const dir = path.join(rootDir, "tracks", m.track, "mandates");
   fs.mkdirSync(dir, { recursive: true });
-  const file = mandateFilename(m);
-  const abs = path.join(dir, file);
+  const abs = path.join(dir, mandateFilename(m));
   if (fs.existsSync(abs)) {
     throw new CliError(`refusing to overwrite existing mandate file: ${abs}`);
   }
   fs.writeFileSync(abs, JSON.stringify(m, null, 2) + "\n", "utf8");
   return { absolute: abs, relative: path.relative(rootDir, abs) };
+}
+
+function isMandate(x: unknown): x is Mandate {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return (
+    o.kind === "Mandate" &&
+    o.version === 1 &&
+    typeof o.mandateId === "string" &&
+    typeof o.track === "string" &&
+    typeof o.holder === "string" &&
+    typeof o.issuedAt === "string" &&
+    typeof o.expiresAt === "string" &&
+    Array.isArray(o.successors) &&
+    typeof o.approvalRule === "object" &&
+    o.approvalRule !== null &&
+    typeof o.minSuccessors === "number" &&
+    typeof o.maxDurationSeconds === "number" &&
+    typeof o.signedBy === "string" &&
+    Array.isArray(o.signatures)
+  );
 }
 
 export function writeEndorsement(rootDir: string, e: ReleaseEndorsement): WrittenPath {
@@ -147,26 +171,37 @@ export function writeCaEndorsement(
   return { absolute: abs, relative: path.relative(rootDir, abs) };
 }
 
-export function writeTrackPolicyIfMissing(
-  rootDir: string,
-  policy: TrackPolicy,
-): WrittenPath | null {
-  const dir = path.join(rootDir, "tracks", policy.track);
-  fs.mkdirSync(dir, { recursive: true });
-  const abs = path.join(dir, "policy.json");
-  if (fs.existsSync(abs)) return null;
-  fs.writeFileSync(abs, JSON.stringify(policy, null, 2) + "\n", "utf8");
-  return { absolute: abs, relative: path.relative(rootDir, abs) };
+/**
+ * Filesystem-safe name for a key file: `keys/<sanitized-email>.json`.
+ * Email is a human label, not a credential (spec non-goal — identity
+ * for trust is the pubkey), so a lossy sanitization is fine for the
+ * on-disk name; the authoritative `currentEmail` lives inside the
+ * signed envelope.
+ */
+export function keyFileFilename(currentEmail: string): string {
+  const safe = currentEmail.replace(/[^A-Za-z0-9.@_+-]/g, "_");
+  return `${safe}.json`;
 }
 
-export function writeRootPolicyIfMissing(
-  rootDir: string,
-  policy: RootPolicy,
-): WrittenPath | null {
-  fs.mkdirSync(rootDir, { recursive: true });
-  const abs = path.join(rootDir, "policy.json");
-  if (fs.existsSync(abs)) return null;
-  fs.writeFileSync(abs, JSON.stringify(policy, null, 2) + "\n", "utf8");
+/**
+ * Write a self-signed KeyFile under `<rootDir>/keys/<email>.json`
+ * (spec §2.4 / §7). A KeyFile is a non-load-bearing identity label —
+ * verification operates on the pubkey, never the email — so this is
+ * deliberately low-stakes; still append-only (refuses to overwrite, so
+ * a re-registration is an explicit delete/rename, never a silent
+ * clobber of a record someone may be rendering).
+ */
+export function writeKeyFile(rootDir: string, k: KeyFile): WrittenPath {
+  const dir = path.join(rootDir, "keys");
+  fs.mkdirSync(dir, { recursive: true });
+  const abs = path.join(dir, keyFileFilename(k.currentEmail));
+  if (fs.existsSync(abs)) {
+    throw new CliError(
+      `refusing to overwrite existing key file: ${abs} ` +
+        `(a re-registration must explicitly remove/rename the old file)`,
+    );
+  }
+  fs.writeFileSync(abs, JSON.stringify(k, null, 2) + "\n", "utf8");
   return { absolute: abs, relative: path.relative(rootDir, abs) };
 }
 
@@ -176,7 +211,9 @@ export function writeRootPolicyIfMissing(
  * mandates issued in the same second. Accepts the unsigned shape too so the
  * `--dry-run` preview can show the exact path that WOULD be written.
  */
-export function mandateFilename(m: Pick<Mandate, "issuedAt" | "mandateId">): string {
+export function mandateFilename(
+  m: Pick<Mandate, "issuedAt" | "mandateId">,
+): string {
   const compact = m.issuedAt.replace(/[:\-]/g, "").replace(/\..*Z$/, "Z").replace(/Z$/, "");
   const safeCompact = compact.replace(/[^0-9T]/g, "");
   const shortId = m.mandateId.slice(0, 8);
@@ -214,20 +251,6 @@ function readJson(p: string): unknown {
   } catch (err) {
     throw new CliError(`failed to parse JSON in ${p}: ${err instanceof Error ? err.message : String(err)}`);
   }
-}
-
-function isMandate(x: unknown): x is Mandate {
-  if (typeof x !== "object" || x === null) return false;
-  const obj = x as Record<string, unknown>;
-  return obj.kind === "Mandate" && obj.version === 1
-    && typeof obj.mandateId === "string"
-    && typeof obj.track === "string"
-    && typeof obj.holder === "string"
-    && typeof obj.issuedAt === "string"
-    && typeof obj.expiresAt === "string"
-    && Array.isArray(obj.successors)
-    && typeof obj.signedBy === "string"
-    && Array.isArray(obj.signatures);
 }
 
 function isReleaseEndorsement(x: unknown): x is ReleaseEndorsement {

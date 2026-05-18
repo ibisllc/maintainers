@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalMandate,
   canonicalReleaseEndorsement,
   canonicalCaEndorsement,
   canonicalKeyFile,
   CanonicalBytesError,
 } from "../src/canonical.js";
 import type {
-  Mandate,
   ReleaseEndorsement,
   CaEndorsement,
   KeyFile,
@@ -15,66 +13,6 @@ import type {
 
 const FORTY_HEX = "0".repeat(40);
 const SIXTY_FOUR_HEX = "0".repeat(64);
-
-function baseMandate(overrides: Partial<Mandate> = {}): Omit<Mandate, "signatures"> {
-  return {
-    kind: "Mandate",
-    version: 1,
-    mandateId: "550e8400-e29b-41d4-a716-446655440000",
-    track: "release",
-    holder: SIXTY_FOUR_HEX.slice(0, 63) + "1",
-    issuedAt: "2026-05-15T12:00:00Z",
-    expiresAt: "2026-07-14T12:00:00Z",
-    successors: [SIXTY_FOUR_HEX.slice(0, 63) + "2"],
-    signedBy: SIXTY_FOUR_HEX.slice(0, 63) + "1",
-    ...overrides,
-  };
-}
-
-describe("canonicalMandate", () => {
-  it("produces deterministic bytes", () => {
-    const m = baseMandate();
-    const bytes1 = canonicalMandate(m);
-    const bytes2 = canonicalMandate({ ...m });
-    expect(bytes1).toEqual(bytes2);
-  });
-
-  it("uses the maintainers/mandate/v1 tag", () => {
-    const bytes = canonicalMandate(baseMandate());
-    const decoded = new TextDecoder().decode(bytes);
-    expect(decoded.startsWith("maintainers/mandate/v1|")).toBe(true);
-  });
-
-  it("rejects a track name containing '|'", () => {
-    expect(() => canonicalMandate(baseMandate({ track: "bad|track" }))).toThrow(
-      CanonicalBytesError,
-    );
-  });
-
-  it("rejects a track name containing a control character", () => {
-    expect(() => canonicalMandate(baseMandate({ track: "badtrack" }))).toThrow(
-      CanonicalBytesError,
-    );
-  });
-
-  it("rejects malformed holder pubkey", () => {
-    expect(() => canonicalMandate(baseMandate({ holder: "tooshort" }))).toThrow(
-      CanonicalBytesError,
-    );
-  });
-
-  it("rejects uppercase hex in holder", () => {
-    expect(() =>
-      canonicalMandate(baseMandate({ holder: SIXTY_FOUR_HEX.slice(0, 63) + "A" })),
-    ).toThrow(CanonicalBytesError);
-  });
-
-  it("changing successors changes the bytes", () => {
-    const a = canonicalMandate(baseMandate());
-    const b = canonicalMandate(baseMandate({ successors: [SIXTY_FOUR_HEX.slice(0, 63) + "3"] }));
-    expect(a).not.toEqual(b);
-  });
-});
 
 describe("canonicalReleaseEndorsement", () => {
   function baseEnd(

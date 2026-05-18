@@ -1,61 +1,51 @@
+/**
+ * parse-folder tests — LOCKED Phase-2 v2 model.
+ *
+ * v2 has NO policy.json (root or track): a track is just
+ * `tracks/<track>/mandates/*.json`, each a version-1 Mandate. We
+ * verify the parser only accepts version-1 mandates, surfaces
+ * malformed/v1 files without throwing, sorts by issuedAt, and resolves
+ * the roster.
+ */
+
 import { describe, expect, it } from "vitest";
-import { generateKeypair } from "@maintainers/protocol";
-import {
-  buildGenesisMandate,
-  buildKeyFile,
-  makeGenesisPolicy,
-  makeTrackPolicy,
-  pathForKeyFile,
-  pathForMandate,
-  pathForTrackPolicy,
-  PATH_ROOT_POLICY,
-  serializeEnvelope,
-  serializeJson,
-} from "../src/envelopes.js";
 import { lookupHolder, parseMaintainersFolder } from "../src/parse-folder.js";
+import { pathForKeyFile, pathForMandate, serializeEnvelope } from "../src/envelopes.js";
+import { kp, mkKeyFile, mk } from "./fixtures.js";
 
 function makeRawFolder(): Map<string, Uint8Array> {
-  const seed = new Uint8Array(32);
-  seed[0] = 1;
-  const alice = generateKeypair(seed);
-  const now = new Date("2026-05-11T00:00:00Z");
-  const policy = makeGenesisPolicy("demo", ["release"]);
-  const trackPolicy = makeTrackPolicy("release", 60);
-  const mandate = buildGenesisMandate({
-    holderPub: alice.pubKey,
-    holderPriv: alice.privKey,
-    holderDisplayName: "Alice",
-    holderEmail: "alice@example.com",
-    successors: [],
-    track: "release",
-    now,
-    durationDays: 60,
-    mandateId: "abc-123",
+  const alice = kp(1);
+  const mandate = mk({
+    id: "abc-123-0000-0000-0000-000000000001",
+    holder: alice.pubKey,
+    issuedAt: "2026-05-11T00:00:00Z",
+    expiresAt: "2026-07-10T00:00:00Z",
+    successors: [alice.pubKey],
+    project: { name: "demo", tracks: ["release"] },
+    signedBy: alice.pubKey,
+    signWith: [alice.privKey],
   });
-  const keyfile = buildKeyFile({
+  const keyfile = mkKeyFile({
     pub: alice.pubKey,
     priv: alice.privKey,
     displayName: "Alice",
     email: "alice@example.com",
-    introductionMandate: mandate.mandateId,
   });
   const files = new Map<string, Uint8Array>();
-  files.set(PATH_ROOT_POLICY, serializeJson(policy));
-  files.set(pathForTrackPolicy("release"), serializeJson(trackPolicy));
   files.set(pathForMandate("release", mandate.issuedAt, "genesis"), serializeEnvelope(mandate));
   files.set(pathForKeyFile("alice@example.com"), serializeEnvelope(keyfile));
   return files;
 }
 
-describe("parseMaintainersFolder", () => {
-  it("parses a well-formed folder", () => {
+describe("parseMaintainersFolder (v2)", () => {
+  it("parses a well-formed folder (no policy.json)", () => {
     const folder = parseMaintainersFolder({ files: makeRawFolder() });
-    expect(folder.rootPolicy?.project.name).toBe("demo");
     expect(folder.tracks).toHaveLength(1);
     const t = folder.tracks[0]!;
     expect(t.name).toBe("release");
-    expect(t.policy?.defaultMandateDuration).toBe("P60D");
     expect(t.mandates).toHaveLength(1);
+    expect(t.mandates[0]!.version).toBe(1);
+    expect(t.mandates[0]!.project?.name).toBe("demo");
     expect(folder.keys).toHaveLength(1);
     expect(folder.keys[0]!.keyfile?.displayName).toBe("Alice");
   });
@@ -68,40 +58,48 @@ describe("parseMaintainersFolder", () => {
     expect(folder.tracks[0]!.mandates).toHaveLength(1);
   });
 
+  it("rejects a wrong-version Mandate as malformed (v1 is THE Mandate version)", () => {
+    const files = makeRawFolder();
+    files.set(
+      "tracks/release/mandates/wrong-version.json",
+      new TextEncoder().encode(JSON.stringify({ kind: "Mandate", version: 2, mandateId: "old" })),
+    );
+    const folder = parseMaintainersFolder({ files });
+    const mm = folder.tracks[0]!.malformedMandates;
+    expect(mm).toHaveLength(1);
+    expect(mm[0]!.reason).toBe("not a version-1 Mandate");
+    expect(folder.tracks[0]!.mandates).toHaveLength(1);
+  });
+
   it("sorts mandates by issuedAt", () => {
-    const seed = new Uint8Array(32);
-    seed[0] = 1;
-    const alice = generateKeypair(seed);
-    const policy = makeTrackPolicy("release", 60);
-    const m1 = buildGenesisMandate({
-      holderPub: alice.pubKey,
-      holderPriv: alice.privKey,
-      holderDisplayName: "A",
-      holderEmail: "a@example.com",
-      successors: [],
-      track: "release",
-      now: new Date("2026-02-01T00:00:00Z"),
-      durationDays: 60,
-      mandateId: "m1",
+    const alice = kp(1);
+    const m1 = mk({
+      id: "m1-0000-0000-0000-000000000001",
+      holder: alice.pubKey,
+      issuedAt: "2026-02-01T00:00:00Z",
+      expiresAt: "2026-04-01T00:00:00Z",
+      successors: [alice.pubKey],
+      signedBy: alice.pubKey,
+      signWith: [alice.privKey],
     });
-    const m2 = buildGenesisMandate({
-      holderPub: alice.pubKey,
-      holderPriv: alice.privKey,
-      holderDisplayName: "A",
-      holderEmail: "a@example.com",
-      successors: [],
-      track: "release",
-      now: new Date("2026-01-01T00:00:00Z"),
-      durationDays: 60,
-      mandateId: "m2",
+    const m2 = mk({
+      id: "m2-0000-0000-0000-000000000002",
+      holder: alice.pubKey,
+      issuedAt: "2026-01-01T00:00:00Z",
+      expiresAt: "2026-03-01T00:00:00Z",
+      successors: [alice.pubKey],
+      signedBy: alice.pubKey,
+      signWith: [alice.privKey],
     });
     const files = new Map<string, Uint8Array>();
-    files.set(pathForTrackPolicy("release"), serializeJson(policy));
     // Insert in reverse order to test the sort.
     files.set("tracks/release/mandates/zz.json", serializeEnvelope(m1));
     files.set("tracks/release/mandates/aa.json", serializeEnvelope(m2));
     const folder = parseMaintainersFolder({ files });
-    expect(folder.tracks[0]!.mandates.map((m) => m.mandateId)).toEqual(["m2", "m1"]);
+    expect(folder.tracks[0]!.mandates.map((m) => m.mandateId)).toEqual([
+      "m2-0000-0000-0000-000000000002",
+      "m1-0000-0000-0000-000000000001",
+    ]);
   });
 
   it("lookupHolder returns null for an unknown pubkey", () => {

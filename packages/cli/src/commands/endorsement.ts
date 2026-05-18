@@ -9,6 +9,13 @@
  * The Merkle root is computed from the intermediates list per
  * protocol/intermediateMerkleRoot. The endorsement is signed by the
  * current release-track holder.
+ *
+ * The emitted envelope is still a v1 `ReleaseEndorsement` (that type is
+ * unchanged by the LOCKED Phase-2 v2 model — only the Mandate/policy
+ * authority path moved to v2). This command only needs to confirm a v2
+ * mandate chain EXISTS on the track before signing; the cryptographic
+ * holder-signs authority check is the verifier's
+ * (`verifyChainOfEndorsements`), judged forward-from-pin downstream.
  */
 
 import {
@@ -26,7 +33,7 @@ import {
   type PivPinProvider,
   type SignerOptions,
 } from "../lib/keysource.js";
-import { readStore, writeEndorsement } from "../lib/store.js";
+import { readMandates, writeEndorsement } from "../lib/store.js";
 import { newUuid } from "../lib/uuid.js";
 
 export interface EndorsementOptions {
@@ -50,11 +57,11 @@ export interface EndorsementOptions {
 export async function buildEndorsement(
   opts: EndorsementOptions,
 ): Promise<ReleaseEndorsement> {
-  const store = readStore(opts.rootDir);
-  const trackMandates = store.mandatesByTrack.get(opts.track) ?? [];
+  const trackMandates = readMandates(opts.rootDir, opts.track);
   if (trackMandates.length === 0) {
     throw new CliError(
-      `no mandates found on track "${opts.track}"; bootstrap with "genesis" first`,
+      `no v2 mandates found on track "${opts.track}"; bootstrap with ` +
+        `"upsert-mandate" (the ONE mandate verb) first`,
     );
   }
   const sopts: SignerOptions = {

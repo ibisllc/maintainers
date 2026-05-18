@@ -1,3 +1,8 @@
+/**
+ * Fetcher tests — LOCKED Phase-2 v2 model. There is NO policy.json
+ * (root or per-track); `.maintainers/index.json` is the only
+ * enumerable anchor and mandates are version-1-filtered.
+ */
 import { describe, expect, it } from "vitest";
 import { fetchMaintainers, type FetcherDeps } from "../src/fetcher.js";
 import type { RepoLocation } from "../src/repo-detect.js";
@@ -18,7 +23,7 @@ function makeRepoLocation(rawBase: string): RepoLocation {
 }
 
 describe("fetchMaintainers", () => {
-  it("returns parsed policy, track policies, mandates, keys, and endorsements", async () => {
+  it("returns version-1 mandates, keys, and endorsements", async () => {
     const now = new Date("2026-05-15T12:00:00Z");
     const fx = buildFixture({ takeover: false, recentEmailRotation: false, now });
     const kv = makeMemKv();
@@ -35,13 +40,50 @@ describe("fetchMaintainers", () => {
 
     const repo = makeRepoLocation("https://raw.example.test/owner/repo/main/");
     const data = await fetchMaintainers(repo, deps);
-    expect(data.policy?.project.name).toBe("fixture-project");
     expect(data.branch).toBe("main");
-    expect(data.trackPolicies.release).toBeDefined();
     expect(data.mandates.release).toHaveLength(2);
+    expect(data.mandates.release.every((m) => m.kind === "Mandate" && m.version === 1)).toBe(true);
+    expect(data.mandates.ca).toHaveLength(1);
     expect(data.keys.map((k) => k.displayName).sort()).toEqual(["Alice", "Bob", "Carol"]);
     expect(data.endorsements).toHaveLength(1);
     expect(calls).toBeGreaterThan(0);
+  });
+
+  it("sorts mandates by issuedAt ascending (canonical-log order)", async () => {
+    const now = new Date("2026-05-15T12:00:00Z");
+    const fx = buildFixture({ takeover: false, recentEmailRotation: false, now });
+    const kv = makeMemKv();
+    const deps: FetcherDeps = {
+      fetch: makeFakeFetch(fx.files),
+      storage: kv,
+      now: () => now.getTime(),
+    };
+    const repo = makeRepoLocation("https://raw.example.test/owner/repo/main/");
+    const data = await fetchMaintainers(repo, deps);
+    const issued = data.mandates.release.map((m) => Date.parse(m.issuedAt));
+    expect(issued).toEqual([...issued].sort((a, b) => a - b));
+  });
+
+  it("drops a wrong-version (non-v1) Mandate file as an error", async () => {
+    const now = new Date("2026-05-15T12:00:00Z");
+    const fx = buildFixture({ takeover: false, recentEmailRotation: false, now });
+    const BASE = "https://raw.example.test/owner/repo/main/";
+    const files = new Map(fx.files);
+    // Replace one release mandate with a wrong-version Mandate.
+    files.set(
+      BASE + ".maintainers/tracks/release/mandates/0002-rotate.json",
+      JSON.stringify({ kind: "Mandate", version: 2, mandateId: "x", track: "release" }),
+    );
+    const kv = makeMemKv();
+    const deps: FetcherDeps = {
+      fetch: makeFakeFetch(files),
+      storage: kv,
+      now: () => now.getTime(),
+    };
+    const repo = makeRepoLocation(BASE);
+    const data = await fetchMaintainers(repo, deps);
+    expect(data.mandates.release).toHaveLength(1);
+    expect(data.errors.some((e) => e.error === "not a version-1 Mandate")).toBe(true);
   });
 
   it("caches results for 30 seconds", async () => {
@@ -75,7 +117,7 @@ describe("fetchMaintainers", () => {
     expect(calls).toBeGreaterThan(callsAfterFirst);
   });
 
-  it("returns a degraded result when policy.json is missing on every branch", async () => {
+  it("returns a degraded result when index.json is missing on every branch", async () => {
     const now = new Date("2026-05-15T12:00:00Z");
     const kv = makeMemKv();
     const deps: FetcherDeps = {
@@ -85,17 +127,15 @@ describe("fetchMaintainers", () => {
     };
     const repo = makeRepoLocation("https://raw.example.test/owner/repo/main/");
     const data = await fetchMaintainers(repo, deps);
-    expect(data.policy).toBeNull();
     expect(data.branch).toBeNull();
-    expect(data.errors[0]?.path).toBe(".maintainers/policy.json");
+    expect(Object.keys(data.mandates)).toEqual([]);
+    expect(data.errors[0]?.path).toBe(".maintainers/index.json");
   });
 
   it("rejects unsafe paths in index.json", async () => {
     const now = new Date("2026-05-15T12:00:00Z");
     const files = new Map<string, string>();
     const BASE = "https://raw.example.test/owner/repo/main/";
-    const policy = { schemaVersion: 1, project: { name: "p" }, tracks: [] };
-    files.set(BASE + ".maintainers/policy.json", JSON.stringify(policy));
     files.set(
       BASE + ".maintainers/index.json",
       JSON.stringify({
@@ -113,7 +153,7 @@ describe("fetchMaintainers", () => {
     };
     const repo = makeRepoLocation(BASE);
     const data = await fetchMaintainers(repo, deps);
-    expect(data.policy?.project.name).toBe("p");
+    expect(data.branch).toBe("main");
     // Three unsafe paths were rejected
     expect(data.errors.filter((e) => e.error.startsWith("rejected"))).toHaveLength(3);
   });
@@ -122,13 +162,12 @@ describe("fetchMaintainers", () => {
     const now = new Date("2026-05-15T12:00:00Z");
     const fx = buildFixture({ takeover: false, recentEmailRotation: false, now });
     const kv = makeMemKv();
-    const files = new Map(fx.files);
-    // Place the policy under "master" instead of "main"
+    const files = new Map<string, string>();
+    // Place all files under "master" instead of "main"
     const BASE = "https://raw.example.test/owner/repo/";
     for (const [k, v] of fx.files) {
       const remapped = k.replace(BASE + "main/", BASE + "master/");
       files.set(remapped, v);
-      files.delete(k);
     }
     const deps: FetcherDeps = {
       fetch: makeFakeFetch(files),
@@ -148,6 +187,6 @@ describe("fetchMaintainers", () => {
     };
     const data = await fetchMaintainers(repo, deps);
     expect(data.branch).toBe("master");
-    expect(data.policy?.project.name).toBe("fixture-project");
+    expect(data.mandates.release).toHaveLength(2);
   });
 });

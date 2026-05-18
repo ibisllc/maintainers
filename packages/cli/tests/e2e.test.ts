@@ -1,12 +1,21 @@
 /**
- * End-to-end exercise of the CLI:
- *   - genesis  → writes a self-signed mandate + a track policy file
- *   - mandate  → writes a holder-signed renewal
- *   - verify   → reads everything back and verifies the chain
+ * End-to-end exercise of the CLI (LOCKED Phase-2 v2 model):
+ *   - upsert-mandate (from-scratch ORIGIN) → writes a self-signed root
+ *     mandate with inline policy + project (no policy.json)
+ *   - upsert-mandate (succession/renewal)  → writes the holder-signed
+ *     next mandate, governed by the predecessor's inline rule
+ *   - verify   → reads everything back, anchors at the first on-repo
+ *     mandate's pin, and verifies the chain FORWARD
  *   - status   → identical read path but does not exit on failure
  *
- * Goes through `dispatch()` so we cover the argv → command-dispatch → write
- * path the bin shim actually uses.
+ * Plus the mandated v2 fail-closed negatives on the verify read path:
+ *   - empty store ⇒ no tracks, verify trivially OK (nothing to anchor)
+ *   - a tampered first mandate ⇒ root-signature-invalid ⇒ verify FAILs
+ *     (the pure pin-not-in-log / forked-pin / unauthorised-successor
+ *      negatives are proven at the protocol layer in envelopes.test.ts)
+ *
+ * Goes through `dispatch()` so we cover the argv → command-dispatch →
+ * write path the bin shim actually uses.
  */
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -72,29 +81,38 @@ function mkEnv(now: Date, lines: string[], errs: string[], uuid: () => string): 
 }
 
 describe("end-to-end CLI dispatch", () => {
-  it("genesis → mandate → verify exits 0 and reports a valid chain", async () => {
+  it("upsert-mandate (origin) → upsert-mandate (renewal) → verify exits 0", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
     const uuid = makeUuidFactory();
 
+    // from-scratch ORIGIN — self-signed; successors=[alice,bob]; the
+    // project metadata rides the inline `project` field (no policy.json).
     const env1 = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, uuid);
     const code1 = await dispatch(parseArgs([
-      "genesis",
+      "upsert-mandate",
       "--track", "release",
       "--duration", "60d",
-      "--holder-key", `file:${fx.keys["alice.pub"]}`,
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
-      "--successors", `file:${fx.keys["bob.pub"]}`,
-      "--output", fx.cliRoot,
+      "--successors", `file:${fx.keys["alice.pub"]},file:${fx.keys["bob.pub"]}`,
+      "--threshold", "1",
+      "--max-duration", "365d",
+      "--project-name", "flagship",
+      "--path", fx.cliRoot,
       "--yes",
     ]), env1);
     expect(code1).toBe(0);
-    expect(fs.existsSync(path.join(fx.cliRoot, "tracks/release/policy.json"))).toBe(true);
+    // v2: NO policy.json — the rule is inline in the mandate file.
+    expect(fs.existsSync(path.join(fx.cliRoot, "tracks/release/policy.json"))).toBe(false);
+    expect(
+      fs.readdirSync(path.join(fx.cliRoot, "tracks/release/mandates")).length,
+    ).toBe(1);
 
+    // succession (renewal) — alice is a named successor of the origin.
     const env2 = mkEnv(new Date("2026-02-15T00:00:00Z"), lines, errs, uuid);
     const code2 = await dispatch(parseArgs([
-      "mandate",
+      "upsert-mandate",
       "--track", "release",
       "--duration", "60d",
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
@@ -109,10 +127,12 @@ describe("end-to-end CLI dispatch", () => {
       "--path", fx.cliRoot,
     ]), env3);
     expect(code3).toBe(0);
-    expect(lines.join("\n")).toContain("verify: OK");
+    const out = lines.join("\n");
+    expect(out).toContain("verify: OK");
+    expect(out).toContain("anchored:         yes");
   });
 
-  it("status does not exit non-zero when policy file is missing", async () => {
+  it("status reports an un-anchored track without exiting non-zero", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
@@ -120,26 +140,35 @@ describe("end-to-end CLI dispatch", () => {
 
     const env1 = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, uuid);
     await dispatch(parseArgs([
-      "genesis",
+      "upsert-mandate",
       "--track", "release",
       "--duration", "60d",
-      "--holder-key", `file:${fx.keys["alice.pub"]}`,
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
-      "--output", fx.cliRoot,
+      "--project-name", "flagship",
+      "--path", fx.cliRoot,
       "--yes",
     ]), env1);
-    fs.unlinkSync(path.join(fx.cliRoot, "tracks/release/policy.json"));
+
+    // Tamper the only (root) mandate: the preview anchor recomputes the
+    // pin over the on-disk bytes (so it still "matches"), but the
+    // signature no longer verifies over the mutated canonical bytes ⇒
+    // root-signature-invalid ⇒ the track does not anchor (fail-closed).
+    const mdir = path.join(fx.cliRoot, "tracks/release/mandates");
+    const f = path.join(mdir, fs.readdirSync(mdir)[0]!);
+    const m = JSON.parse(fs.readFileSync(f, "utf8"));
+    m.holder = "ff".repeat(32); // mutate a signed field
+    fs.writeFileSync(f, JSON.stringify(m, null, 2) + "\n");
 
     const env2 = mkEnv(new Date("2026-01-15T00:00:00Z"), lines, errs, uuid);
     const code = await dispatch(parseArgs([
       "status",
       "--path", fx.cliRoot,
     ]), env2);
-    expect(code).toBe(0);
-    expect(lines.join("\n")).toContain("policy:           MISSING");
+    expect(code).toBe(0); // status never exits non-zero
+    expect(lines.join("\n")).toMatch(/anchored:\s+NO/);
   });
 
-  it("verify returns 1 when the policy file is missing", async () => {
+  it("verify returns 1 when a track cannot anchor (tampered root ⇒ fail-closed)", async () => {
     const fx = setupTmp();
     const lines: string[] = [];
     const errs: string[] = [];
@@ -147,15 +176,19 @@ describe("end-to-end CLI dispatch", () => {
 
     const env1 = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, uuid);
     await dispatch(parseArgs([
-      "genesis",
+      "upsert-mandate",
       "--track", "release",
       "--duration", "60d",
-      "--holder-key", `file:${fx.keys["alice.pub"]}`,
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
-      "--output", fx.cliRoot,
+      "--project-name", "flagship",
+      "--path", fx.cliRoot,
       "--yes",
     ]), env1);
-    fs.unlinkSync(path.join(fx.cliRoot, "tracks/release/policy.json"));
+    const mdir = path.join(fx.cliRoot, "tracks/release/mandates");
+    const f = path.join(mdir, fs.readdirSync(mdir)[0]!);
+    const m = JSON.parse(fs.readFileSync(f, "utf8"));
+    m.expiresAt = "2099-01-01T00:00:00.000Z"; // tamper a signed field
+    fs.writeFileSync(f, JSON.stringify(m, null, 2) + "\n");
 
     const env2 = mkEnv(new Date("2026-01-15T00:00:00Z"), lines, errs, uuid);
     const code = await dispatch(parseArgs([
@@ -163,6 +196,25 @@ describe("end-to-end CLI dispatch", () => {
       "--path", fx.cliRoot,
     ]), env2);
     expect(code).toBe(1);
+    // The preview anchor recomputes mandatePinHash over the on-disk
+    // bytes, so a tampered root still matches its own (recomputed) pin —
+    // but its signature no longer verifies over the mutated canonical
+    // bytes ⇒ root-signature-invalid ⇒ fail-closed (verify FAILs). The
+    // pure pin-not-in-log / forked-pin negatives are proven at the
+    // protocol layer in envelopes.test.ts.
+    expect(lines.join("\n")).toMatch(
+      /did not anchor a forward chain.*root-signature-invalid/s,
+    );
+  });
+
+  it("verify on an empty/absent store exits 0 (no tracks to anchor)", async () => {
+    const fx = setupTmp();
+    const lines: string[] = [];
+    const errs: string[] = [];
+    const env = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, makeUuidFactory());
+    const code = await dispatch(parseArgs(["verify", "--path", fx.cliRoot]), env);
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("no tracks discovered");
   });
 
   it("unknown command exits 2 with usage on stderr", async () => {
@@ -188,14 +240,16 @@ describe("end-to-end CLI dispatch", () => {
     const lines: string[] = [];
     const errs: string[] = [];
     const env = mkEnv(new Date("2026-01-01T00:00:00Z"), lines, errs, makeUuidFactory());
+    // upsert-mandate succession with no prior mandate AND no project-name
+    // ⇒ treated as from-scratch but missing the required --project-name.
     const code = await dispatch(parseArgs([
-      "mandate",
+      "upsert-mandate",
       "--track", "release",
       "--duration", "60d",
       "--signing-key", `file:${fx.keys["alice.priv"]}`,
       "--path", fx.cliRoot,
     ]), env);
     expect(code).toBe(1);
-    expect(errs.join("\n")).toMatch(/no prior mandates/);
+    expect(errs.join("\n")).toMatch(/requires --project-name/);
   });
 });

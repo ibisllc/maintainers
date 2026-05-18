@@ -1,6 +1,8 @@
 /**
- * Shared ceremony scaffolding for the four maintainer-key commands
- * (genesis / mandate / takeover / ca-endorsement).
+ * Shared ceremony scaffolding for the maintainer-key commands
+ * (upsert-mandate / ca-endorsement / create-key). genesis / mandate /
+ * takeover collapsed into the ONE `upsert-mandate` verb (LOCKED
+ * Phase-2 v2); their ceremony kinds were removed with them.
  *
  * The security-critical invariant: the bytes a `--dry-run` previews are
  * EXACTLY the bytes the real run signs. Every ceremony is two phases —
@@ -31,7 +33,10 @@ import {
 } from "./keysource.js";
 import { CliError } from "./args.js";
 
-export type CeremonyKind = "genesis" | "mandate" | "takeover" | "ca-endorsement";
+export type CeremonyKind =
+  | "ca-endorsement"
+  | "create-key"
+  | "upsert-mandate";
 
 /**
  * The output of an `assemble*` call: everything needed to either preview
@@ -51,9 +56,17 @@ export interface Assembled<U> {
   rootDir: string;
   /** Path, relative to `rootDir`, that WOULD be written. */
   targetRelative: string;
-  /** Extra append-only writes a real run would also make if missing
-   *  (e.g. a track `policy.json` on genesis) — informational only. */
+  /** Extra append-only writes a real run would also make if missing —
+   *  informational only. Unused in the v2 model (succession policy is
+   *  inline in each mandate; there is no separate side-artifact); kept
+   *  as an optional hook for future ceremonies. */
   alsoIfMissing?: { relative: string }[];
+  /** Ceremony-specific extra banner lines (e.g. the loud FROM-SCRATCH
+   *  ORIGIN warning for an `upsert-mandate` with no predecessor). The
+   *  assemble step decides these — it knows the sub-case the static
+   *  `ceremonyBanner` switch cannot see. Appended inside the banner so
+   *  it still precedes the byte preview + the typed confirm. */
+  bannerExtra?: string[];
 }
 
 function toHex(bytes: Uint8Array): string {
@@ -69,44 +82,42 @@ function toHex(bytes: Uint8Array): string {
  */
 export function ceremonyBanner<U>(a: Assembled<U>): string[] {
   const head = "────────────────────────────────────────────────────────────";
+  const lines = bannerBody(a, head);
+  if (a.bannerExtra && a.bannerExtra.length > 0) {
+    // splice the extra lines just inside the closing rule
+    return [...lines.slice(0, -1), ...a.bannerExtra, head];
+  }
+  return lines;
+}
+
+function bannerBody<U>(a: Assembled<U>, head: string): string[] {
   switch (a.ceremony) {
-    case "genesis":
-      return [
-        head,
-        "⚠  GENESIS — you are creating the ROOT OF TRUST for this project.",
-        "   This CANNOT be undone or revoked. Every future CA lease and",
-        "   release ultimately chains to the key you are signing with now.",
-        "   • Use your PRIMARY YubiKey.",
-        "   • Your BACKUP / successor key MUST be named in --successors —",
-        "     that named successor is your ONLY recovery if the primary is",
-        "     lost or bricked (there is no key escrow).",
-        "   • RECORD the holder pubkey printed at the end: it is baked into",
-        "     the build as MAINTAINER_GENESIS_PUBKEYS.",
-        head,
-      ];
-    case "takeover":
-      return [
-        head,
-        "⚠  TAKEOVER — you are claiming a track as a NAMED SUCCESSOR because",
-        "   the predecessor mandate has expired. This is VISIBLE to every",
-        "   consumer (a TakeoverAlarm) — expected and good. Proceed only if",
-        "   you are the legitimate successor.",
-        head,
-      ];
-    case "mandate":
-      return [
-        head,
-        "RENEW — extend authority on this track. Signed by the CURRENT",
-        "holder. The previous mandate stays valid until its own expiry",
-        "(overlap is normal and gap-free).",
-        head,
-      ];
     case "ca-endorsement":
       return [
         head,
         "CA LEASE — authorize the hot operational CA pubkey until notAfter.",
         "A LAPSED lease fail-closes the CA globally (no revocation list) —",
         "renew before notAfter. Overlapping leases are fine.",
+        head,
+      ];
+    case "upsert-mandate":
+      // Neutral header; assemble supplies the from-scratch-ORIGIN vs
+      // succession specifics via `bannerExtra` (it knows the sub-case
+      // this static switch cannot see).
+      return [
+        head,
+        "UPSERT MANDATE — issue the next mandate on this track. The",
+        "predecessor's embedded rule (approvalRule over its successors)",
+        "governs whether this is accepted; there is NO self-renewal.",
+        head,
+      ];
+    case "create-key":
+      return [
+        head,
+        "REGISTER KEY — a self-signed identity label (display name +",
+        "email) for this pubkey. This is NOT a grant of authority: a key",
+        "file is non-load-bearing (trust operates on the pubkey, never",
+        "the email). Safe to redo — just remove/rename the old file.",
         head,
       ];
   }

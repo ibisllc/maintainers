@@ -1,30 +1,39 @@
 /**
- * CaEndorsement verification — implements §5.1 of docs/spec/v1.md.
+ * CaEndorsement verification — v2 (LOCKED Phase-2 v2 model).
  *
- * The one deliberate deviation from ReleaseEndorsement verification:
- * a CaEndorsement is judged against the ca-track authority at the
- * VERIFIER'S clock (`now`), never at the endorsement's own `issuedAt`.
- * It is an independent short lease, not append-only history — there is
- * no predecessor chain. Consequences:
+ * Same lease semantics as v1 caEndorsement.ts (the §5.1 deviation: judged
+ * against the ca-track authority at the VERIFIER'S clock `now`, never at
+ * the endorsement's own `issuedAt`; no predecessor chain). The only
+ * change is the authority source — exactly as for ReleaseEndorsement v2:
  *
- *   - A leaked hot key is bounded to one lease window; withholding the
- *     next endorsement kills it globally with no revocation list.
- *   - Backdating `issuedAt` is defeated: the signer must be the
- *     ca-track authority *now*, so a stale/rotated maintainer cannot
- *     resurrect a key by re-dating an endorsement.
- *   - The CA never signs its own authority; only the cold ca-track
- *     maintainer does.
+ *   v1: the signed `TrackPolicy.approvalRule` decided the authorised
+ *       signer set.
+ *   v2: there is no `policy.json` / `TrackPolicy`. The mandate's `holder`
+ *       IS the operational authority that signs CaEndorsements. A
+ *       CaEndorsement is authorised iff `signedBy` equals the holder of
+ *       the v2 ca-track mandate current at `now` ({@link
+ *       currentAuthority} over a {@link verifyMandateChainFromPin}
+ *       chain). D3 (freshness) is unchanged: the lease window judged at
+ *       NOW + the authority judged at NOW together bound a leaked hot key
+ *       to one window and kill it by simply withholding the next lease.
  *
- * `authorizedCaKeys(now)` is §9 link-3: the set of operational keys a
- * consumer may currently accept artifacts under. An empty set means
- * "reject ALL CA artifacts" (fail closed) — callers MUST treat it so.
+ * Fail-closed: a chain anchored at an absent/forked pin yields no
+ * authority at now ⇒ every lease is rejected `no-ca-authority-at-now` ⇒
+ * `authorizedCaKeys` is `[]` ⇒ the #30 chokepoint rejects all CA
+ * artifacts. Never a fall-back to a previously-seen key.
  */
 
 import { canonicalCaEndorsement } from "./canonical.js";
 import { verify } from "./crypto.js";
-import { currentAuthority, type VerifiedTrack } from "./verifier.js";
-import type { ApprovalRule, CaEndorsement, Pubkey } from "./types.js";
+import { currentAuthority, type VerifiedChain } from "./verifier.js";
+import type { CaEndorsement, Pubkey } from "./types.js";
 
+/**
+ * Why a CaEndorsement was rejected. Re-homed here from the removed v1
+ * caEndorsement.ts (c4.5e); the lease semantics + result shape are
+ * unchanged so consumers keep the identical downstream types. This
+ * module is now their canonical home.
+ */
 export type CaEndorsementFailReason =
   | "wrong-envelope"
   | "lease-window-malformed"
@@ -60,8 +69,7 @@ type OneResult =
 
 function verifyOne(
   e: CaEndorsement,
-  caTrack: VerifiedTrack,
-  approvalRule: ApprovalRule,
+  caChain: VerifiedChain,
   now: Date,
   skewMs: number,
 ): OneResult {
@@ -78,9 +86,6 @@ function verifyOne(
   if (nowMs < nb - skewMs) return { ok: false, reason: "lease-not-yet" };
   if (nowMs >= na + skewMs) return { ok: false, reason: "lease-expired" };
 
-  // Canonical bytes + every signature. A malformed field throws inside
-  // canonicalCaEndorsement; an adversarial envelope must never crash
-  // the verifier, so map that to a signature rejection.
   let bytes: Uint8Array;
   try {
     bytes = canonicalCaEndorsement(e);
@@ -98,8 +103,9 @@ function verifyOne(
     }
   }
 
-  // THE deviation: authority at `now`, not at e.issuedAt.
-  const authority = currentAuthority(caTrack, now);
+  // THE deviation, v2: authority at `now` (never at e.issuedAt), taken
+  // from the verify-forward-from-pin chain.
+  const authority = currentAuthority(caChain, now);
   if (!authority) return { ok: false, reason: "no-ca-authority-at-now" };
 
   const signerPubkeys = new Set(e.signatures.map((s) => s.pubkey));
@@ -110,36 +116,24 @@ function verifyOne(
       detail: "signedBy not present in signatures",
     };
   }
-  if (approvalRule.kind === "threshold" && approvalRule.of === "anyAuthorizedSigner") {
-    if (e.signedBy !== authority.holder) {
-      return {
-        ok: false,
-        reason: "signer-not-authorized",
-        detail: `signedBy ${e.signedBy} is not the ca authority at now (${authority.holder})`,
-      };
-    }
-    if (signerPubkeys.size < approvalRule.threshold) {
-      return { ok: false, reason: "approval-rule-unsatisfied" };
-    }
-  } else if (approvalRule.kind === "threshold") {
-    const required = new Set(approvalRule.of);
-    let matches = 0;
-    for (const pk of signerPubkeys) if (required.has(pk)) matches++;
-    if (matches < approvalRule.threshold) {
-      return { ok: false, reason: "approval-rule-unsatisfied" };
-    }
+  if (e.signedBy !== authority.holder) {
+    return {
+      ok: false,
+      reason: "signer-not-authorized",
+      detail: `signedBy ${e.signedBy} is not the v2 ca authority at now (${authority.holder})`,
+    };
   }
   return { ok: true };
 }
 
 /**
- * Verify a set of CaEndorsements against a verified ca-track at `now`.
- * Order does not matter (no chain); each is judged independently.
+ * Verify a set of CaEndorsements against a verified v2 ca-track chain at
+ * `now`. Order does not matter (no chain); each is judged independently.
+ * Result shape identical to v1 {@link verifyCaEndorsements}.
  */
 export function verifyCaEndorsements(
   endorsements: CaEndorsement[],
-  caTrack: VerifiedTrack,
-  approvalRule: ApprovalRule,
+  caChain: VerifiedChain,
   now: Date,
   opts: { clockSkewMs?: number } = {},
 ): VerifiedCaEndorsements {
@@ -148,7 +142,7 @@ export function verifyCaEndorsements(
   const rejections: VerifiedCaEndorsements["rejections"] = [];
 
   for (const e of endorsements) {
-    const r = verifyOne(e, caTrack, approvalRule, now, skewMs);
+    const r = verifyOne(e, caChain, now, skewMs);
     if (r.ok) validEndorsements.push(e);
     else rejections.push({ endorsement: e, reason: r.reason, detail: r.detail });
   }
@@ -169,24 +163,17 @@ export function verifyCaEndorsements(
 }
 
 /**
- * §9 link-3: the operational keys a consumer may currently accept
+ * §9 link-3, v2: the operational keys a consumer may currently accept
  * CA-signed artifacts under. Empty array ⇒ fail closed (reject all).
  * Deduped, insertion order preserved.
  */
 export function authorizedCaKeys(
   endorsements: CaEndorsement[],
-  caTrack: VerifiedTrack,
-  approvalRule: ApprovalRule,
+  caChain: VerifiedChain,
   now: Date,
   opts: { clockSkewMs?: number } = {},
 ): Pubkey[] {
-  const { validEndorsements } = verifyCaEndorsements(
-    endorsements,
-    caTrack,
-    approvalRule,
-    now,
-    opts,
-  );
+  const { validEndorsements } = verifyCaEndorsements(endorsements, caChain, now, opts);
   const seen = new Set<Pubkey>();
   const out: Pubkey[] = [];
   for (const e of validEndorsements) {

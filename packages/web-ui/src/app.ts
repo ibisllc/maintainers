@@ -9,13 +9,15 @@
  *   - returns a small handle for tests/integrators to drive the store
  *     externally (e.g. swap adapters, advance virtual time)
  *
+ * **#31 — STATUS / PREVIEW ONLY (LOCKED Phase-2 v2 model).** The web UI
+ * is never a signing surface: the onboard / renew / takeover wizards
+ * were removed (signing happens on the YubiKey-driven CLI). Only the
+ * read-only home + project views remain.
+ *
  * Routing model: location.hash. Examples:
  *   #/              → home
- *   #/onboard       → onboarding wizard step 1
  *   #/p/github.com/foo/bar   → project view (health tab)
  *   #/p/github.com/foo/bar/roster  → project view (roster tab)
- *   #/p/github.com/foo/bar/renew/release  → renew the release track
- *   #/p/github.com/foo/bar/takeover/release  → take over the release track
  *
  * Query string `?repo=github.com/foo/bar` works too and is auto-rewritten
  * to a hash route on first load.
@@ -23,12 +25,9 @@
 
 import type { AdapterClient } from "./adapter.js";
 import { ensureStylesInjected } from "./styles.js";
-import { defaultDraft, StateStore, type AppState, type OnboardStep, type ProjectView, type Route } from "./state.js";
+import { StateStore, type AppState, type ProjectView, type Route } from "./state.js";
 import { renderHome } from "./views/home.js";
-import { renderOnboard, type OnboardDeps } from "./views/onboard.js";
 import { renderProject } from "./views/project.js";
-import { renderRenew, type RenewDeps } from "./views/renew.js";
-import { renderTakeover, type TakeoverDeps } from "./views/takeover.js";
 import { el } from "./dom.js";
 
 export interface MountOptions {
@@ -37,9 +36,6 @@ export interface MountOptions {
   rpName?: string;
   /** For tests: override "now" so verifier sees a fixed clock. */
   now?: Date;
-  onboardDeps?: OnboardDeps;
-  renewDeps?: RenewDeps;
-  takeoverDeps?: TakeoverDeps;
   /** Disable URL routing (tests). */
   noRouting?: boolean;
 }
@@ -62,7 +58,6 @@ export function mountApp(root: HTMLElement, options: MountOptions): MountHandle 
     loaded: null,
     loading: false,
     error: null,
-    draft: defaultDraft(),
   };
   const store = new StateStore(state);
 
@@ -88,26 +83,11 @@ export function mountApp(root: HTMLElement, options: MountOptions): MountHandle 
       case "home":
         renderHome(root, store);
         break;
-      case "onboard":
-        renderOnboard(r.step, root, store, options.onboardDeps);
-        break;
       case "project":
         if (!s.loading && (!s.loaded || s.loaded.ref.canonical !== r.repoUrl)) {
           void ensureProjectLoaded(r.repoUrl);
         }
         renderProject(r.view, root, store);
-        break;
-      case "renew":
-        if (!s.loading && (!s.loaded || s.loaded.ref.canonical !== r.repoUrl)) {
-          void ensureProjectLoaded(r.repoUrl);
-        }
-        renderRenew(r.repoUrl, r.track, root, store, options.renewDeps);
-        break;
-      case "takeover":
-        if (!s.loading && (!s.loaded || s.loaded.ref.canonical !== r.repoUrl)) {
-          void ensureProjectLoaded(r.repoUrl);
-        }
-        renderTakeover(r.repoUrl, r.track, root, store, options.takeoverDeps);
         break;
     }
     if (!options.noRouting) writeRoute(s.route);
@@ -145,7 +125,7 @@ function appendFooter(root: HTMLElement, s: AppState): void {
     el(
       "span",
       { style: { marginLeft: "12px" } },
-      `Spec: maintainers protocol v1`,
+      `Spec: maintainers protocol`,
     ),
   );
   root.appendChild(footer);
@@ -165,35 +145,13 @@ function parseRoute(): Route {
     return { kind: "home" };
   }
   const parts = hash.split("/").filter(Boolean);
-  if (parts[0] === "onboard") {
-    const stepRaw = parts[1] ?? "project";
-    const allowed: OnboardStep[] = [
-      "project",
-      "yubikey",
-      "name-key",
-      "cadence",
-      "successor",
-      "review",
-      "commit",
-      "done",
-    ];
-    const step = (allowed as string[]).includes(stepRaw) ? (stepRaw as OnboardStep) : "project";
-    return { kind: "onboard", step };
-  }
   if (parts[0] === "p" && parts.length >= 4) {
-    // /p/<host>/<owner>/<repo>[...]
+    // /p/<host>/<owner>/<repo>[/<tab>]
     const host = parts[1]!;
     const owner = parts[2]!;
     const repo = parts[3]!;
     const repoUrl = `${host}/${owner}/${repo}`;
-    const tail = parts.slice(4);
-    if (tail[0] === "renew" && tail[1]) {
-      return { kind: "renew", repoUrl, track: tail[1] };
-    }
-    if (tail[0] === "takeover" && tail[1]) {
-      return { kind: "takeover", repoUrl, track: tail[1] };
-    }
-    const tab = tail[0];
+    const tab = parts[4];
     const allowedTabs: ProjectView[] = ["health", "roster", "activity"];
     const view = tab && (allowedTabs as string[]).includes(tab) ? (tab as ProjectView) : "health";
     return { kind: "project", repoUrl, view };
@@ -208,22 +166,9 @@ function writeRoute(r: Route): void {
     case "home":
       h = "/";
       break;
-    case "onboard":
-      h = `/onboard/${r.step}`;
-      break;
     case "project": {
       const url = r.repoUrl.replace(/^https?:\/\//, "");
       h = `/p/${url}/${r.view}`;
-      break;
-    }
-    case "renew": {
-      const url = r.repoUrl.replace(/^https?:\/\//, "");
-      h = `/p/${url}/renew/${r.track}`;
-      break;
-    }
-    case "takeover": {
-      const url = r.repoUrl.replace(/^https?:\/\//, "");
-      h = `/p/${url}/takeover/${r.track}`;
       break;
     }
   }

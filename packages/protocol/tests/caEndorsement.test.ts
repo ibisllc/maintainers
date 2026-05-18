@@ -1,52 +1,52 @@
 /**
- * CaEndorsement verification tests. A CaEndorsement is a present-tense
- * lease judged against the ca-track authority at the verifier's clock
- * (NOW), with no predecessor chain — these tests pin that deviation
- * from ReleaseEndorsement and the fail-closed authorizedCaKeys set.
+ * CaEndorsement v2 verification tests. A CaEndorsement is a present-tense
+ * lease judged against the v2 ca-track authority at the verifier's clock
+ * (NOW), no predecessor chain. These pin the §5.1 deviation under the v2
+ * holder-signs model + the fail-closed authorizedCaKeys set.
  */
 import { describe, expect, it } from "vitest";
 import { generateKeypair } from "../src/crypto.js";
 import { signMandate, signCaEndorsement } from "../src/signing.js";
-import { verifyTrack } from "../src/verifier.js";
+import { mandatePinHash } from "../src/canonical.js";
+import { verifyMandateChainFromPin } from "../src/verifier.js";
 import {
   verifyCaEndorsements,
   authorizedCaKeys,
   DEFAULT_CLOCK_SKEW_MS,
 } from "../src/caEndorsement.js";
-import type { CaEndorsement, Mandate, TrackPolicy } from "../src/types.js";
+import type { CaEndorsement, Mandate } from "../src/types.js";
 
-function keypair(seedByte: number): { privKey: string; pubKey: string } {
+function kp(seedByte: number): { privKey: string; pubKey: string } {
   const seed = new Uint8Array(32);
   seed[0] = seedByte;
   return generateKeypair(seed);
 }
 
-const caPolicy: TrackPolicy = {
-  track: "ca",
-  defaultMandateDuration: "180d",
-  approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-};
+const alice = kp(1); // ca-track maintainer (cold key) = holder
+const backup = kp(2);
+const eve = kp(99);
+const DAY = 86400;
 
-const alice = keypair(1); // ca-track maintainer (cold key)
-const eve = keypair(99);
-
-/** ca-track mandate active 2026-01-01 .. 2026-06-01. */
-function caTrack(expiresAt = "2026-06-01T00:00:00Z") {
-  const genesis: Mandate = signMandate(
-    {
-      kind: "Mandate",
-      version: 1,
-      mandateId: "ca-g1",
-      track: "ca",
-      holder: alice.pubKey,
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt,
-      successors: [keypair(2).pubKey],
-      signedBy: alice.pubKey,
-    },
-    [{ privKey: alice.privKey }],
-  );
-  return verifyTrack("ca", caPolicy, [genesis]);
+/** v2 ca-track root mandate; expires at `expiresAt`. */
+function caChain(expiresAt = "2026-06-01T00:00:00Z") {
+  const m: Omit<Mandate, "signatures"> = {
+    kind: "Mandate",
+    version: 1,
+    mandateId: "ca-root",
+    track: "ca",
+    holder: alice.pubKey,
+    issuedAt: "2026-01-01T00:00:00Z",
+    expiresAt,
+    successors: [backup.pubKey],
+    approvalRule: { kind: "threshold", threshold: 1 },
+    minSuccessors: 1,
+    maxDurationSeconds: 365 * DAY,
+    defaultDurationSeconds: 180 * DAY,
+  };
+  const signed = signMandate({ ...m, signedBy: alice.pubKey }, [
+    { privKey: alice.privKey },
+  ]);
+  return verifyMandateChainFromPin(mandatePinHash(signed), [signed]);
 }
 
 function mkCa(
@@ -70,17 +70,12 @@ function mkCa(
   );
 }
 
-const HOT_CA = "ab".repeat(32); // 64-hex operational CA pubkey
-const NOW_IN = new Date("2026-03-04T00:00:00Z"); // inside the lease window
+const HOT_CA = "ab".repeat(32);
+const NOW_IN = new Date("2026-03-04T00:00:00Z");
 
 describe("verifyCaEndorsements", () => {
-  it("accepts an in-window endorsement signed by the ca authority at now", () => {
-    const r = verifyCaEndorsements(
-      [mkCa(alice, { caPubkey: HOT_CA })],
-      caTrack(),
-      caPolicy.approvalRule,
-      NOW_IN,
-    );
+  it("accepts an in-window endorsement signed by the v2 ca authority at now", () => {
+    const r = verifyCaEndorsements([mkCa(alice, { caPubkey: HOT_CA })], caChain(), NOW_IN);
     expect(r.validEndorsements).toHaveLength(1);
     expect(r.rejections).toHaveLength(0);
     expect(r.currentCaPubkey).toBe(HOT_CA);
@@ -88,23 +83,15 @@ describe("verifyCaEndorsements", () => {
 
   it("authorizedCaKeys returns the in-window key; empty input is fail-closed", () => {
     expect(
-      authorizedCaKeys(
-        [mkCa(alice, { caPubkey: HOT_CA })],
-        caTrack(),
-        caPolicy.approvalRule,
-        NOW_IN,
-      ),
+      authorizedCaKeys([mkCa(alice, { caPubkey: HOT_CA })], caChain(), NOW_IN),
     ).toEqual([HOT_CA]);
-    expect(
-      authorizedCaKeys([], caTrack(), caPolicy.approvalRule, NOW_IN),
-    ).toEqual([]);
+    expect(authorizedCaKeys([], caChain(), NOW_IN)).toEqual([]);
   });
 
   it("rejects lease-not-yet (now well before notBefore)", () => {
     const r = verifyCaEndorsements(
       [mkCa(alice, { caPubkey: HOT_CA })],
-      caTrack(),
-      caPolicy.approvalRule,
+      caChain(),
       new Date("2026-02-01T00:00:00Z"),
     );
     expect(r.rejections[0]?.reason).toBe("lease-not-yet");
@@ -114,8 +101,7 @@ describe("verifyCaEndorsements", () => {
   it("rejects lease-expired (now well after notAfter)", () => {
     const r = verifyCaEndorsements(
       [mkCa(alice, { caPubkey: HOT_CA })],
-      caTrack(),
-      caPolicy.approvalRule,
+      caChain(),
       new Date("2026-04-01T00:00:00Z"),
     );
     expect(r.rejections[0]?.reason).toBe("lease-expired");
@@ -130,32 +116,23 @@ describe("verifyCaEndorsements", () => {
           notAfter: "2026-03-01T00:00:00Z",
         }),
       ],
-      caTrack(),
-      caPolicy.approvalRule,
+      caChain(),
       NOW_IN,
     );
     expect(r.rejections[0]?.reason).toBe("lease-window-malformed");
   });
 
   it("rejects an endorsement signed by a non-authority", () => {
-    const r = verifyCaEndorsements(
-      [mkCa(eve, { caPubkey: HOT_CA })],
-      caTrack(),
-      caPolicy.approvalRule,
-      NOW_IN,
-    );
+    const r = verifyCaEndorsements([mkCa(eve, { caPubkey: HOT_CA })], caChain(), NOW_IN);
     expect(r.rejections[0]?.reason).toBe("signer-not-authorized");
   });
 
-  it("rejects a backdated endorsement once the ca-track holder has expired at now", () => {
-    // Lease window straddles now, but the ca-track mandate expired
-    // 2026-02-01; at now=2026-03-04 there is no ca authority, so even a
-    // structurally perfect, in-window endorsement is rejected. This is
-    // the core anti-backdating property.
+  it("rejects when the v2 ca-track holder has expired at now (anti-backdating)", () => {
+    // Lease straddles now, but the ca-track mandate expired 2026-02-01;
+    // at now=2026-03-04 there is no v2 ca authority ⇒ rejected.
     const r = verifyCaEndorsements(
       [mkCa(alice, { caPubkey: HOT_CA })],
-      caTrack("2026-02-01T00:00:00Z"),
-      caPolicy.approvalRule,
+      caChain("2026-02-01T00:00:00Z"),
       NOW_IN,
     );
     expect(r.rejections[0]?.reason).toBe("no-ca-authority-at-now");
@@ -164,12 +141,7 @@ describe("verifyCaEndorsements", () => {
   it("rejects a tampered endorsement (signature-invalid)", () => {
     const e = mkCa(alice, { caPubkey: HOT_CA });
     const tampered: CaEndorsement = { ...e, scope: "evil/scope" };
-    const r = verifyCaEndorsements(
-      [tampered],
-      caTrack(),
-      caPolicy.approvalRule,
-      NOW_IN,
-    );
+    const r = verifyCaEndorsements([tampered], caChain(), NOW_IN);
     expect(r.rejections[0]?.reason).toBe("signature-invalid");
   });
 
@@ -189,94 +161,40 @@ describe("verifyCaEndorsements", () => {
       notBefore: "2026-03-05T00:00:00Z",
       notAfter: "2026-03-14T00:00:00Z",
     });
-    const at = new Date("2026-03-06T00:00:00Z"); // both windows overlap
-    const r = verifyCaEndorsements(
-      [oldE, newE],
-      caTrack(),
-      caPolicy.approvalRule,
-      at,
-    );
+    const at = new Date("2026-03-06T00:00:00Z");
+    const r = verifyCaEndorsements([oldE, newE], caChain(), at);
     expect(r.validEndorsements).toHaveLength(2);
-    expect(r.currentCaPubkey).toBe(NEW_CA); // max issuedAt wins
-    expect(
-      authorizedCaKeys([oldE, newE], caTrack(), caPolicy.approvalRule, at),
-    ).toEqual([HOT_CA, NEW_CA]);
+    expect(r.currentCaPubkey).toBe(NEW_CA);
+    expect(authorizedCaKeys([oldE, newE], caChain(), at)).toEqual([HOT_CA, NEW_CA]);
   });
 
-  it("honors the ±5 min window-edge skew tolerance", () => {
+  it("honors the ±5 min window-edge skew tolerance and the override", () => {
     const e = mkCa(alice, { caPubkey: HOT_CA }); // window 03-01 .. 03-08
-    // 4 minutes before notBefore — inside default skew ⇒ accepted.
     const justBefore = new Date(Date.parse("2026-03-01T00:00:00Z") - 4 * 60_000);
     expect(
-      verifyCaEndorsements([e], caTrack(), caPolicy.approvalRule, justBefore)
-        .validEndorsements,
+      verifyCaEndorsements([e], caChain(), justBefore).validEndorsements,
     ).toHaveLength(1);
-    // 6 minutes before — outside default skew ⇒ lease-not-yet.
     const tooEarly = new Date(Date.parse("2026-03-01T00:00:00Z") - 6 * 60_000);
     expect(
-      verifyCaEndorsements([e], caTrack(), caPolicy.approvalRule, tooEarly)
-        .rejections[0]?.reason,
+      verifyCaEndorsements([e], caChain(), tooEarly).rejections[0]?.reason,
     ).toBe("lease-not-yet");
-    // Skew is overridable (0 ⇒ strict).
     expect(
-      verifyCaEndorsements([e], caTrack(), caPolicy.approvalRule, justBefore, {
-        clockSkewMs: 0,
-      }).rejections[0]?.reason,
+      verifyCaEndorsements([e], caChain(), justBefore, { clockSkewMs: 0 })
+        .rejections[0]?.reason,
     ).toBe("lease-not-yet");
     expect(DEFAULT_CLOCK_SKEW_MS).toBe(5 * 60 * 1000);
   });
 
-  it("enforces an M-of-N specific-signer approval rule", () => {
-    const b = keypair(2); // named successor / co-signer
-    const mPolicy: TrackPolicy = {
-      track: "ca",
-      defaultMandateDuration: "180d",
-      approvalRule: {
-        kind: "threshold",
-        threshold: 2,
-        of: [alice.pubKey, b.pubKey],
-      },
-    };
-    const genesis: Mandate = signMandate(
-      {
-        kind: "Mandate",
-        version: 1,
-        mandateId: "ca-m1",
-        track: "ca",
-        holder: alice.pubKey,
-        issuedAt: "2026-01-01T00:00:00Z",
-        expiresAt: "2026-06-01T00:00:00Z",
-        successors: [b.pubKey],
-        signedBy: alice.pubKey,
-      },
-      [{ privKey: alice.privKey }, { privKey: b.privKey }],
+  it("FAIL-CLOSED: a chain anchored at an absent/forked pin ⇒ no-ca-authority-at-now", () => {
+    const e = mkCa(alice, { caPubkey: HOT_CA });
+    const forked = verifyMandateChainFromPin("de".repeat(32), []);
+    expect(verifyCaEndorsements([e], forked, NOW_IN).rejections[0]?.reason).toBe(
+      "no-ca-authority-at-now",
     );
-    const track = verifyTrack("ca", mPolicy, [genesis]);
-
-    const oneSig = mkCa(alice, { caPubkey: HOT_CA });
-    expect(
-      verifyCaEndorsements([oneSig], track, mPolicy.approvalRule, NOW_IN)
-        .rejections[0]?.reason,
-    ).toBe("approval-rule-unsatisfied");
-
-    const twoSig = signCaEndorsement(
-      {
-        kind: "CaEndorsement",
-        version: 1,
-        endorsementId: "ca-e2",
-        track: "ca",
-        caPubkey: HOT_CA,
-        scope: "flagship/directory-attestation",
-        notBefore: "2026-03-01T00:00:00Z",
-        notAfter: "2026-03-08T00:00:00Z",
-        issuedAt: "2026-03-01T00:00:00Z",
-        signedBy: alice.pubKey,
-      },
-      [{ privKey: alice.privKey }, { privKey: b.privKey }],
+    expect(authorizedCaKeys([e], forked, NOW_IN)).toEqual([]);
+    const noPin = verifyMandateChainFromPin("", []);
+    expect(verifyCaEndorsements([e], noPin, NOW_IN).rejections[0]?.reason).toBe(
+      "no-ca-authority-at-now",
     );
-    expect(
-      verifyCaEndorsements([twoSig], track, mPolicy.approvalRule, NOW_IN)
-        .validEndorsements,
-    ).toHaveLength(1);
   });
 });

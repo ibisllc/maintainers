@@ -1,11 +1,14 @@
 /**
- * `ca-endorsement` command — the weekly CA lease.
+ * `ca-endorsement` command — the weekly CA lease (LOCKED Phase-2 v2).
  *
- * We cross-check against the protocol verifier end to end: a ca-track
- * genesis mandate → `verifyTrack` → `verifyCaEndorsements` /
- * `authorizedCaKeys`. The CLI must emit a lease that the §9 link-3
- * chokepoint accepts and that authorizes exactly the hot CA pubkey.
- * The YubiKey-PIV path must be byte-identical to the hex path (§11.1).
+ * The emitted envelope is still a v1 `CaEndorsement` (that type is
+ * unchanged by the v2 model — only the Mandate/policy authority path
+ * moved). We cross-check end to end against the **v2** verifier: a
+ * ca-track from-scratch (root) `Mandate` → `verifyMandateChainFromPin`
+ * → `verifyCaEndorsements` / `authorizedCaKeys`. The CLI must emit a
+ * lease the §9 link-3 chokepoint accepts at the verifier's clock and
+ * that authorizes exactly the hot CA pubkey. The YubiKey-PIV path must
+ * be byte-identical to the hex path (§11.1).
  */
 
 import { describe, expect, it } from "vitest";
@@ -16,19 +19,19 @@ import {
   authorizedCaKeys,
   canonicalCaEndorsement,
   generateKeypair,
+  mandatePinHash,
   sign,
   signCaEndorsement,
+  signMandate,
   verify,
   verifyCaEndorsements,
-  verifyTrack,
-  type ApprovalRule,
-  type TrackPolicy,
+  verifyMandateChainFromPin,
+  type Mandate,
 } from "@maintainers/protocol";
 import { buildCaEndorsement } from "../src/commands/caEndorsement.js";
-import { buildGenesis } from "../src/commands/genesis.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
-import { writeMandate, writeTrackPolicyIfMissing } from "../src/lib/store.js";
+import { writeMandate } from "../src/lib/store.js";
 import type { PivTransport } from "../src/lib/keysource.js";
 
 function keypair(seedByte: number) {
@@ -47,37 +50,38 @@ function fakeFs(files: Record<string, string>) {
   };
 }
 
-const CA_RULE: ApprovalRule = {
-  kind: "threshold",
-  threshold: 1,
-  of: "anyAuthorizedSigner",
-};
-const CA_POLICY: TrackPolicy = {
-  track: "ca",
-  defaultMandateDuration: "365d",
-  approvalRule: CA_RULE,
-};
-
 const NOW = new Date("2026-05-17T12:00:00Z");
 
-/** A ca-track VerifiedTrack rooted in `maintainer` as the cold authority. */
-async function caTrackOf(maintainer: { pubKey: string; privKey: string }) {
-  const genesis = await buildGenesis({
+/** A ca-track from-scratch (root) v2 mandate self-signed by `maintainer`
+ *  as the cold authority — long-lived so it is the live authority at NOW. */
+function caRootMandate(maintainer: { pubKey: string; privKey: string }): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
+    kind: "Mandate",
+    version: 1,
+    mandateId: "ca-root-0000-4000-8000-000000000000",
     track: "ca",
-    duration: "365d",
-    holderKeySource: "file:./m.pub",
-    signingKeySource: "file:./m.priv",
-    successorsSource: undefined,
-    outputDir: undefined,
-    now: () => new Date("2026-01-01T00:00:00Z"),
-    io: fakeFs({ "./m.pub": maintainer.pubKey, "./m.priv": maintainer.privKey }),
-    uuid: () => "ca-genesis-0000-0000-000000000000",
-  });
-  return verifyTrack("ca", CA_POLICY, [genesis]);
+    holder: maintainer.pubKey,
+    issuedAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2027-01-01T00:00:00.000Z",
+    successors: [maintainer.pubKey],
+    approvalRule: { kind: "threshold", threshold: 1 },
+    minSuccessors: 1,
+    maxDurationSeconds: 365 * 86_400,
+    defaultDurationSeconds: 365 * 86_400,
+    project: { name: "flagship", contact: "harry@flagship.services", tracks: ["ca"] },
+    signedBy: maintainer.pubKey,
+  };
+  return signMandate(unsigned, [{ privKey: maintainer.privKey }]);
+}
+
+/** The verified v2 ca chain anchored at the root's own pin. */
+function caChainOf(maintainer: { pubKey: string; privKey: string }) {
+  const root = caRootMandate(maintainer);
+  return verifyMandateChainFromPin(mandatePinHash(root), [root]);
 }
 
 describe("buildCaEndorsement", () => {
-  it("emits a lease the protocol verifier accepts and that authorizes the hot CA key", async () => {
+  it("emits a lease the v2 verifier accepts and that authorizes the hot CA key", async () => {
     const maintainer = keypair(1);
     const hotCa = keypair(9);
     const e = await buildCaEndorsement({
@@ -102,12 +106,12 @@ describe("buildCaEndorsement", () => {
     expect(e).toEqual(signCaEndorsement(unsigned, [{ privKey: maintainer.privKey }]));
     expect(verify(e.signatures[0]!.sig, canonicalCaEndorsement(e), maintainer.pubKey)).toBe(true);
 
-    const caTrack = await caTrackOf(maintainer);
-    const result = verifyCaEndorsements([e], caTrack, CA_RULE, NOW);
+    const caChain = caChainOf(maintainer);
+    const result = verifyCaEndorsements([e], caChain, NOW);
     expect(result.validEndorsements).toHaveLength(1);
     expect(result.rejections).toHaveLength(0);
     expect(result.currentCaPubkey).toBe(hotCa.pubKey);
-    expect(authorizedCaKeys([e], caTrack, CA_RULE, NOW)).toEqual([hotCa.pubKey]);
+    expect(authorizedCaKeys([e], caChain, NOW)).toEqual([hotCa.pubKey]);
   });
 
   it("a lapsed lease is rejected at the verifier's clock (fail-closed)", async () => {
@@ -123,9 +127,29 @@ describe("buildCaEndorsement", () => {
       io: fakeFs({ "./m.priv": maintainer.privKey }),
       uuid: () => "ca-e2-0000-0000-0000-000000000000",
     });
-    const caTrack = await caTrackOf(maintainer);
+    const caChain = caChainOf(maintainer);
     const later = new Date("2026-06-30T00:00:00Z"); // well past notAfter
-    expect(authorizedCaKeys([e], caTrack, CA_RULE, later)).toEqual([]);
+    expect(authorizedCaKeys([e], caChain, later)).toEqual([]);
+  });
+
+  it("an empty/absent pin ⇒ no-pin ⇒ fail-closed (no CA key is authorized)", async () => {
+    const maintainer = keypair(13);
+    const hotCa = keypair(14);
+    const e = await buildCaEndorsement({
+      caPubkey: hotCa.pubKey,
+      scope: "flagship/directory-attestation",
+      duration: "7d",
+      track: "ca",
+      signingKeySource: "file:./m.priv",
+      now: () => NOW,
+      io: fakeFs({ "./m.priv": maintainer.privKey }),
+      uuid: () => "ca-e-empty-0000-0000-000000000000",
+    });
+    const root = caRootMandate(maintainer);
+    // empty baked pin ⇒ rootError "no-pin" ⇒ empty chain ⇒ reject all.
+    const noPin = verifyMandateChainFromPin("", [root]);
+    expect(noPin.rootError).toBe("no-pin");
+    expect(authorizedCaKeys([e], noPin, NOW)).toEqual([]);
   });
 
   it("YubiKey-PIV (injected token) is byte-identical to the file: path", async () => {
@@ -199,24 +223,10 @@ describe("ca-endorsement dispatch (e2e)", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "maintainers-ca-disp-"));
     const root = path.join(tmp, ".maintainers");
     const keyFile = path.join(tmp, "m.priv");
-    const pubFile = path.join(tmp, "m.pub");
     fs.writeFileSync(keyFile, maintainer.privKey);
-    fs.writeFileSync(pubFile, maintainer.pubKey);
-    // A real ca-track genesis on disk so the signer IS the authority
-    // (the advisory must NOT fire).
-    writeTrackPolicyIfMissing(root, CA_POLICY);
-    const genesis = await buildGenesis({
-      track: "ca",
-      duration: "365d",
-      holderKeySource: `file:${pubFile}`,
-      signingKeySource: `file:${keyFile}`,
-      successorsSource: undefined,
-      outputDir: undefined,
-      now: () => new Date("2026-01-01T00:00:00Z"),
-      io: { readFileSync: (p: string) => fs.readFileSync(p, "utf8") },
-      uuid: () => "ca-g-0000-0000-0000-000000000000",
-    });
-    writeMandate(root, genesis);
+    // A real ca-track v2 root mandate on disk so the signer IS the
+    // on-disk authority (the advisory must NOT fire).
+    writeMandate(root, caRootMandate(maintainer));
 
     const lines: string[] = [];
     const code = await dispatch(
@@ -241,7 +251,7 @@ describe("ca-endorsement dispatch (e2e)", () => {
     expect(e.caPubkey).toBe(hotCa.pubKey);
     expect(e.signedBy).toBe(maintainer.pubKey);
     expect(lines.join("\n")).toContain("wrote CA lease");
-    // The on-disk-authority ADVISORY must not fire (genesis is present +
+    // The on-disk-authority ADVISORY must not fire (root is present +
     // the signer is the authority). Scoped to the advisory's wording so
     // it doesn't collide with the always-on preview's "note:" line.
     expect(lines.join("\n")).not.toMatch(/^note: (no |signer )/m);

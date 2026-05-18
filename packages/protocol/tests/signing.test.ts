@@ -9,13 +9,14 @@ import {
   signKeyFile,
   signKeyIntroductionRequest,
   signKeyRedirect,
-  signMandate,
   signReleaseEndorsement,
   signCaEndorsement,
   privKeySigner,
-  signMandateWith,
   signReleaseEndorsementWith,
   signCaEndorsementWith,
+  signKeyFileWith,
+  signKeyRedirectWith,
+  signEmailRotationWith,
   type Ed25519Signer,
 } from "../src/signing.js";
 import {
@@ -23,7 +24,6 @@ import {
   canonicalKeyFile,
   canonicalKeyIntroductionRequest,
   canonicalKeyRedirect,
-  canonicalMandate,
   canonicalReleaseEndorsement,
   canonicalCaEndorsement,
 } from "../src/canonical.js";
@@ -35,27 +35,6 @@ function keypair(seedByte: number) {
 }
 
 describe("sign* roundtrips", () => {
-  it("signMandate signature verifies against canonicalMandate", () => {
-    const alice = keypair(1);
-    const bob = keypair(2);
-    const m = signMandate(
-      {
-        kind: "Mandate",
-        version: 1,
-        mandateId: "g1",
-        track: "release",
-        holder: alice.pubKey,
-        issuedAt: "2026-01-01T00:00:00Z",
-        expiresAt: "2026-03-01T00:00:00Z",
-        successors: [bob.pubKey],
-        signedBy: alice.pubKey,
-      },
-      [{ privKey: alice.privKey }],
-    );
-    const bytes = canonicalMandate(m);
-    expect(verify(m.signatures[0]!.sig, bytes, m.signatures[0]!.pubkey)).toBe(true);
-  });
-
   it("signKeyFile self-signs against canonicalKeyFile", () => {
     const alice = keypair(1);
     const k = signKeyFile(
@@ -172,17 +151,6 @@ describe("sign* roundtrips", () => {
 });
 
 describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
-  const mandate = (holder: string) => ({
-    kind: "Mandate" as const,
-    version: 1 as const,
-    mandateId: "m1",
-    track: "ca",
-    holder,
-    issuedAt: "2026-03-01T00:00:00Z",
-    expiresAt: "2026-09-01T00:00:00Z",
-    successors: [holder],
-    signedBy: holder,
-  });
   const caEndorsement = (signedBy: string) => ({
     kind: "CaEndorsement" as const,
     version: 1 as const,
@@ -226,15 +194,6 @@ describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
       },
     };
   }
-
-  it("privKeySigner produces byte-identical output to the sync path (Mandate)", async () => {
-    const a = keypair(1);
-    const sync = signMandate(mandate(a.pubKey), [{ privKey: a.privKey }]);
-    const viaSigner = await signMandateWith(mandate(a.pubKey), [
-      privKeySigner(a.privKey),
-    ]);
-    expect(viaSigner).toEqual(sync);
-  });
 
   it("privKeySigner is byte-identical for CaEndorsement (the weekly lease)", async () => {
     const a = keypair(2);
@@ -281,16 +240,84 @@ describe("external Ed25519Signer (#28 — YubiKey-PIV seam)", () => {
     ).toBe(true);
   });
 
-  it("collects multiple signers in order (M-of-N), token + hex mixed", async () => {
-    const a = keypair(5);
-    const b = keypair(6);
-    const m = await signMandateWith(mandate(a.pubKey), [
-      fakeTokenSigner(a.privKey, a.pubKey),
-      privKeySigner(b.privKey),
+  // ── identity envelopes: single SELF-signature (register / rotate-email)
+  const keyFile = (pub: string) => ({
+    kind: "KeyFile" as const,
+    version: 1 as const,
+    pubkey: pub,
+    displayName: "Harry Winner",
+    currentEmail: "harry@harrywinner.com",
+    emailHistory: [
+      { email: "harry@harrywinner.com", from: "2026-03-01T00:00:00Z", to: null },
+    ],
+    metadata: { photo: null, github: "hwinner", role: "maintainer" },
+    introductionMandate: "11111111-1111-4111-8111-111111111111",
+  });
+  const keyRedirect = (pub: string) => ({
+    kind: "KeyRedirect" as const,
+    version: 1 as const,
+    fromEmail: "harry@old.example",
+    renamedTo: "harry@harrywinner.com",
+    renamedAt: "2026-03-01T00:00:00Z",
+    pubkey: pub,
+  });
+  const emailRotation = (pub: string) => ({
+    kind: "EmailRotation" as const,
+    version: 1 as const,
+    pubkey: pub,
+    fromEmail: "harry@old.example",
+    toEmail: "harry@harrywinner.com",
+    rotatedAt: "2026-03-01T00:00:00Z",
+  });
+
+  it("signKeyFileWith is byte-identical to the sync self-signed path", async () => {
+    const a = keypair(7);
+    const sync = signKeyFile(keyFile(a.pubKey), a.privKey);
+    const viaSigner = await signKeyFileWith(keyFile(a.pubKey), [
+      privKeySigner(a.privKey),
     ]);
-    expect(m.signatures.map((s) => s.pubkey)).toEqual([a.pubKey, b.pubKey]);
-    const bytes = canonicalMandate(m);
-    expect(verify(m.signatures[0]!.sig, bytes, a.pubKey)).toBe(true);
-    expect(verify(m.signatures[1]!.sig, bytes, b.pubKey)).toBe(true);
+    expect(viaSigner).toEqual(sync);
+    expect(
+      verify(viaSigner.signature, canonicalKeyFile(viaSigner), a.pubKey),
+    ).toBe(true);
+  });
+
+  it("signKeyRedirectWith / signEmailRotationWith byte-identical + a token-shaped signer verifies", async () => {
+    const a = keypair(8);
+    expect(
+      await signKeyRedirectWith(keyRedirect(a.pubKey), [
+        privKeySigner(a.privKey),
+      ]),
+    ).toEqual(signKeyRedirect(keyRedirect(a.pubKey), a.privKey));
+    const rot = await signEmailRotationWith(emailRotation(a.pubKey), [
+      fakeTokenSigner(a.privKey, a.pubKey),
+    ]);
+    expect(rot).toEqual(signEmailRotation(emailRotation(a.pubKey), a.privKey));
+    expect(
+      verify(rot.signature, canonicalEmailRotation(rot), a.pubKey),
+    ).toBe(true);
+  });
+
+  it("self-signed envelopes fail closed: wrong signer pubkey is rejected", async () => {
+    const a = keypair(9);
+    const b = keypair(10);
+    // b signs a KeyFile that claims a's pubkey — must reject (not self).
+    await expect(
+      signKeyFileWith(keyFile(a.pubKey), [fakeTokenSigner(b.privKey, b.pubKey)]),
+    ).rejects.toThrow(/does not correspond to the envelope's pubkey/);
+  });
+
+  it("self-signed envelopes fail closed: must have exactly one signer", async () => {
+    const a = keypair(11);
+    const b = keypair(12);
+    await expect(signKeyFileWith(keyFile(a.pubKey), [])).rejects.toThrow(
+      /exactly one self-signer/,
+    );
+    await expect(
+      signEmailRotationWith(emailRotation(a.pubKey), [
+        privKeySigner(a.privKey),
+        privKeySigner(b.privKey),
+      ]),
+    ).rejects.toThrow(/exactly one self-signer/);
   });
 });

@@ -142,6 +142,10 @@ describe("loadSigner / PivTransport seam (#28)", () => {
     issuedAt: "2026-03-01T00:00:00Z",
     expiresAt: "2026-09-01T00:00:00Z",
     successors: [holder],
+    approvalRule: { kind: "threshold" as const, threshold: 1 },
+    minSuccessors: 1,
+    maxDurationSeconds: 365 * 86_400,
+    defaultDurationSeconds: 60 * 86_400,
     signedBy: holder,
   });
 

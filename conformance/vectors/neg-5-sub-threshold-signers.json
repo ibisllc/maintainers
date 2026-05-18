@@ -1,0 +1,83 @@
+{
+  "name": "neg-5-sub-threshold-signers",
+  "description": "Fewer distinct predecessor-successor signatures than `approvalRule.threshold` ⇒ forward step rejects 'approval-threshold-unmet'; the successor is dropped ⇒ reject at `now` past the root window.",
+  "input": {
+    "pin": "873eb8da35ed0d82a2be99b9621ab2f315cc98798bcc3f01320f59c861e5191a",
+    "now": "2026-05-01T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000000",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-03-02T00:00:00Z",
+          "successors": [
+            "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+            "9be3287795907809407e14439ff198d5bfc7dce6f9bc743cb369146f610b4801",
+            "f4bd46521ce7b57899ae6f4ca09eddec689327a86a2232d4a3f2a4f39ac68a9e"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 2
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "project": {
+            "name": "conformance-fixture",
+            "contact": "security@example.org",
+            "tracks": [
+              "release",
+              "ca"
+            ]
+          },
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "baf7873db66c619e2b02e067d165e7a682295dd7f4d93f4d5a41cb84958d1b4b08c2d079981a50769cc79338d2c88af259aaeadbeec9843449d9905e256d3f0d"
+            }
+          ]
+        },
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000001",
+          "track": "release",
+          "holder": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "issuedAt": "2026-02-15T00:00:00Z",
+          "expiresAt": "2026-04-15T00:00:00Z",
+          "successors": [
+            "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "signedBy": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "signatures": [
+            {
+              "pubkey": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+              "sig": "010e16332c41e5d4ad6b57a028358f5cfafa712fbdbf2e5604f4cd5fd08b755c8e41d776c410839d6f82217c29cd0e83196dfeea39648ca2f7b62bca5d79c80e"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "approval-threshold-unmet",
+    "subject": "mandate-chain",
+    "track": "release"
+  }
+}

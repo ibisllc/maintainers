@@ -11,6 +11,7 @@
  * raw envelopes through a generic serializer.
  */
 
+import { sha256Hex } from "./crypto.js";
 import type {
   Mandate,
   KeyFile,
@@ -76,31 +77,6 @@ function joinTagged(kind: string, parts: string[]): Uint8Array {
     }
   }
   return new TextEncoder().encode(all.join(SEP));
-}
-
-/**
- * Mandate canonical bytes.
- * Order: mandateId | track | holder | issuedAt | expiresAt | successors-joined-by-comma | signedBy
- *
- * Successors are joined by `,` (we forbid `,` in pubkeys via hex validation).
- */
-export function canonicalMandate(m: Omit<Mandate, "signatures">): Uint8Array {
-  validateField("mandateId", m.mandateId);
-  validateField("track", m.track);
-  validateHex("holder", m.holder, 64);
-  validateField("issuedAt", m.issuedAt);
-  validateField("expiresAt", m.expiresAt);
-  for (const s of m.successors) validateHex("successor", s, 64);
-  validateHex("signedBy", m.signedBy, 64);
-  return joinTagged("mandate", [
-    m.mandateId,
-    m.track,
-    m.holder,
-    m.issuedAt,
-    m.expiresAt,
-    m.successors.join(","),
-    m.signedBy,
-  ]);
 }
 
 /**
@@ -280,4 +256,121 @@ export function validateHex(name: string, value: Pubkey, length: number): void {
 function validateHexOrEmpty(name: string, value: string | null, length: number): void {
   if (value === null || value === "") return;
   validateHex(name, value, length);
+}
+
+// ---------------------------------------------------------------------------
+// Mandate canonical bytes.  Tag: maintainers/mandate/v1
+//
+// Field order (fixed; one slot per logical field — no nested
+// fingerprints, so a missing `project` is just four empty slots and the
+// layout stays a constant length regardless of optionality):
+//
+//   mandateId | track | holder | issuedAt | expiresAt
+//   | successors(,) | approvalThreshold | minSuccessors
+//   | maxDurationSeconds | defaultDurationSeconds
+//   | projectName | projectContact | projectHomepage | projectTracks(,)
+//   | signedBy
+//
+// `approvalRule.kind` is the constant "threshold" so only the integer
+// `threshold` is in the bytes. Numbers are serialized via the
+// non-negative-integer encoder so the canonical bytes are byte-stable
+// across languages (the v2 spec is consumed by Swift/Kotlin/fetch()
+// reimplementations against the published conformance vectors).
+// ---------------------------------------------------------------------------
+
+/** Reject `,` in addition to `|`/control — for fields embedded in a `,`-joined slot. */
+function validateNoComma(name: string, value: string): void {
+  validateField(name, value);
+  const idx = value.indexOf(",");
+  if (idx !== -1) {
+    throw new CanonicalBytesError(
+      name,
+      "wrong-shape",
+      `field "${name}" must not contain ',' (it is embedded in a comma-joined slot) at index ${idx}`,
+    );
+  }
+}
+
+/** Deterministic encoding of a non-negative safe integer. */
+function canonicalUint(name: string, n: number): string {
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+    throw new CanonicalBytesError(
+      name,
+      "wrong-shape",
+      `field "${name}" must be a non-negative safe integer; got ${String(n)}`,
+    );
+  }
+  return String(n);
+}
+
+export function canonicalMandate(m: Omit<Mandate, "signatures">): Uint8Array {
+  if (m.kind !== "Mandate" || m.version !== 1) {
+    throw new CanonicalBytesError("kind/version", "wrong-shape", "not a Mandate envelope");
+  }
+  validateField("mandateId", m.mandateId);
+  validateField("track", m.track);
+  validateHex("holder", m.holder, 64);
+  validateField("issuedAt", m.issuedAt);
+  validateField("expiresAt", m.expiresAt);
+  for (const s of m.successors) validateHex("successor", s, 64);
+  if (m.approvalRule.kind !== "threshold") {
+    throw new CanonicalBytesError("approvalRule.kind", "wrong-shape", "approvalRule.kind must be \"threshold\"");
+  }
+  const threshold = canonicalUint("approvalRule.threshold", m.approvalRule.threshold);
+  const minSucc = canonicalUint("minSuccessors", m.minSuccessors);
+  const maxDur = canonicalUint("maxDurationSeconds", m.maxDurationSeconds);
+  const defDur = canonicalUint("defaultDurationSeconds", m.defaultDurationSeconds);
+  const p = m.project;
+  const projName = p?.name ?? "";
+  const projContact = p?.contact ?? "";
+  const projHome = p?.homepage ?? "";
+  const projTracks = p?.tracks ?? [];
+  validateField("project.name", projName);
+  validateField("project.contact", projContact);
+  validateField("project.homepage", projHome);
+  for (const t of projTracks) validateNoComma("project.track", t);
+  validateHex("signedBy", m.signedBy, 64);
+  return joinTaggedMandate("mandate", [
+    m.mandateId,
+    m.track,
+    m.holder,
+    m.issuedAt,
+    m.expiresAt,
+    m.successors.join(","),
+    threshold,
+    minSucc,
+    maxDur,
+    defDur,
+    projName,
+    projContact,
+    projHome,
+    projTracks.join(","),
+    m.signedBy,
+  ]);
+}
+
+/** Like {@link joinTagged} but stamps the `v1` version segment. */
+function joinTaggedMandate(kind: string, parts: string[]): Uint8Array {
+  const tag = `${TAG_PREFIX}/${kind}/v1`;
+  const all = [tag, ...parts];
+  for (let i = 1; i < all.length; i++) {
+    const part = all[i];
+    if (part === undefined) {
+      throw new CanonicalBytesError(`position ${i}`, "wrong-shape", `canonical-bytes part at position ${i} is undefined`);
+    }
+  }
+  return new TextEncoder().encode(all.join(SEP));
+}
+
+/**
+ * The pin: SHA-256 (lower-hex) of a mandate's canonical bytes — the
+ * exact bytes that are signed. This is the value baked per surface
+ * (#30 generalised). It commits to the mandate's content + inline
+ * policy (NOT its signatures, which the forward-walk re-verifies
+ * anyway); a mandate whose bytes hash to a baked pin is therefore
+ * bit-identical to the pinned one (sha256 collision-resistance) — that
+ * is what makes L1 "the pin IS the floor" sound.
+ */
+export function mandatePinHash(m: Omit<Mandate, "signatures">): string {
+  return sha256Hex(canonicalMandate(m));
 }

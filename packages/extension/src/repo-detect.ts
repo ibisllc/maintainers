@@ -27,7 +27,7 @@ export interface RepoLocation {
   repoUrl: string;
   /**
    * Build a raw-content URL for a given path inside the repo
-   * (e.g., `.maintainers/policy.json`) and branch.
+   * (e.g., `.maintainers/index.json`) and branch.
    */
   rawUrl(path: string, branch: string): string;
 }

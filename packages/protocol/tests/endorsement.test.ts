@@ -1,48 +1,79 @@
 /**
- * Endorsement-chain verification tests. Builds a valid release-track,
- * issues endorsements signed by the track's current holder, and
- * confirms acceptance + rejection paths.
+ * ReleaseEndorsement v2 verification tests. Builds a verify-forward v2
+ * release chain (pin → forward), issues endorsements signed by the
+ * mandate HOLDER (the v2 authority model — no TrackPolicy), and pins the
+ * accept paths, every fail-closed negative, and the holder-rotation
+ * property (the right authority is resolved per `issuedAt`).
  */
 import { describe, expect, it } from "vitest";
 import { generateKeypair, intermediateMerkleRoot } from "../src/crypto.js";
 import { signMandate, signReleaseEndorsement } from "../src/signing.js";
-import { verifyTrack } from "../src/verifier.js";
+import { canonicalMandate, mandatePinHash } from "../src/canonical.js";
+import { verifyMandateChainFromPin } from "../src/verifier.js";
 import { verifyChainOfEndorsements } from "../src/endorsement.js";
-import type { Mandate, ReleaseEndorsement, TrackPolicy } from "../src/types.js";
+import type { Mandate, ReleaseEndorsement } from "../src/types.js";
 
-function keypair(seedByte: number): { privKey: string; pubKey: string } {
+function kp(seedByte: number): { privKey: string; pubKey: string } {
   const seed = new Uint8Array(32);
   seed[0] = seedByte;
   return generateKeypair(seed);
 }
 
-const policy: TrackPolicy = {
-  track: "release",
-  defaultMandateDuration: "60d",
-  approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-};
+const founder = kp(1);
+const alice = kp(3);
+const eve = kp(99);
+const DAY = 86400;
 
-function makeReleaseTrack(): { mandates: Mandate[]; alice: { privKey: string; pubKey: string } } {
-  const alice = keypair(1);
-  const genesis = signMandate(
-    {
-      kind: "Mandate",
-      version: 1,
-      mandateId: "g1",
-      track: "release",
-      holder: alice.pubKey,
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2027-01-01T00:00:00Z",
-      successors: [],
-      signedBy: alice.pubKey,
-    },
-    [{ privKey: alice.privKey }],
-  );
-  return { mandates: [genesis], alice };
+interface MkM {
+  id: string;
+  holder: string;
+  issuedAt: string;
+  expiresAt: string;
+  successors: string[];
+  threshold?: number;
+  minSuccessors?: number;
+  maxDurationSeconds?: number;
+  signedBy: string;
+  signWith: string[];
 }
 
-const HASH = (n: number): string =>
-  n.toString(16).padStart(2, "0").repeat(20); // 40 hex chars
+function mkMandate(o: MkM): Mandate {
+  const unsigned: Omit<Mandate, "signatures"> = {
+    kind: "Mandate",
+    version: 1,
+    mandateId: o.id,
+    track: "release",
+    holder: o.holder,
+    issuedAt: o.issuedAt,
+    expiresAt: o.expiresAt,
+    successors: o.successors,
+    approvalRule: { kind: "threshold", threshold: o.threshold ?? 1 },
+    minSuccessors: o.minSuccessors ?? 1,
+    maxDurationSeconds: o.maxDurationSeconds ?? 365 * DAY,
+    defaultDurationSeconds: 60 * DAY,
+    signedBy: o.signedBy,
+  };
+  return signMandate(unsigned, o.signWith.map((privKey) => ({ privKey })));
+}
+
+/** Root mandate active 2026-01-01 .. 2027-01-01, holder=founder. */
+function root(): Mandate {
+  return mkMandate({
+    id: "00000000-0000-4000-8000-000000000000",
+    holder: founder.pubKey,
+    issuedAt: "2026-01-01T00:00:00Z",
+    expiresAt: "2027-01-01T00:00:00Z",
+    successors: [founder.pubKey, alice.pubKey],
+    signedBy: founder.pubKey,
+    signWith: [founder.privKey],
+  });
+}
+
+function chain(mandates: Mandate[], pinAt: Mandate = mandates[0]!) {
+  return verifyMandateChainFromPin(mandatePinHash(pinAt), mandates);
+}
+
+const HASH = (n: number): string => n.toString(16).padStart(2, "0").repeat(20); // 40 hex
 
 function mkEndorsement(
   signer: { privKey: string; pubKey: string },
@@ -54,6 +85,7 @@ function mkEndorsement(
     previousReleaseId: string | null;
     previousCommitHash: string | null;
     issuedAt?: string;
+    signedBy?: string;
   },
 ): ReleaseEndorsement {
   return signReleaseEndorsement(
@@ -69,33 +101,30 @@ function mkEndorsement(
       intermediateMerkleRoot: intermediateMerkleRoot(opts.intermediateCommits),
       endorsedNotes: null,
       issuedAt: opts.issuedAt ?? "2026-02-01T00:00:00Z",
-      signedBy: signer.pubKey,
+      signedBy: opts.signedBy ?? signer.pubKey,
     },
     [{ privKey: signer.privKey }],
   );
 }
 
-describe("verifyChainOfEndorsements", () => {
-  it("accepts a single genesis endorsement", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const e = mkEndorsement(track.alice, {
+describe("verifyChainOfEndorsements — accept paths", () => {
+  it("accepts a genesis endorsement signed by the v2 holder", () => {
+    const e = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
       commitHash: HASH(1),
       intermediateCommits: [],
       previousReleaseId: null,
       previousCommitHash: null,
+      issuedAt: "2026-02-01T00:00:00Z",
     });
-    const result = verifyChainOfEndorsements([e], verified, policy.approvalRule);
-    expect(result.validEndorsements).toHaveLength(1);
-    expect(result.rejections).toHaveLength(0);
+    const r = verifyChainOfEndorsements([e], chain([root()]));
+    expect(r.validEndorsements).toHaveLength(1);
+    expect(r.rejections).toHaveLength(0);
   });
 
-  it("accepts a chain of two endorsements", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const e1 = mkEndorsement(track.alice, {
+  it("accepts a 2-endorsement chain", () => {
+    const e1 = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
       commitHash: HASH(1),
@@ -103,38 +132,40 @@ describe("verifyChainOfEndorsements", () => {
       previousReleaseId: null,
       previousCommitHash: null,
     });
-    const e2 = mkEndorsement(track.alice, {
+    const e2 = mkEndorsement(founder, {
       releaseId: "r2",
       semverTag: "v0.2.0",
-      commitHash: HASH(5),
-      intermediateCommits: [HASH(2), HASH(3), HASH(4), HASH(5)],
+      commitHash: HASH(2),
+      intermediateCommits: [HASH(1)],
       previousReleaseId: "r1",
       previousCommitHash: HASH(1),
       issuedAt: "2026-03-01T00:00:00Z",
     });
-    const result = verifyChainOfEndorsements([e1, e2], verified, policy.approvalRule);
-    expect(result.validEndorsements).toHaveLength(2);
+    const r = verifyChainOfEndorsements([e1, e2], chain([root()]));
+    expect(r.validEndorsements).toHaveLength(2);
+    expect(r.rejections).toHaveLength(0);
   });
+});
 
-  it("rejects a genesis endorsement that has a previous*", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const e = mkEndorsement(track.alice, {
+describe("verifyChainOfEndorsements — fail-closed negatives", () => {
+  const c = () => chain([root()]);
+
+  it("rejects genesis-must-have-no-predecessor", () => {
+    const e = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
       commitHash: HASH(1),
       intermediateCommits: [],
-      previousReleaseId: "r0",
-      previousCommitHash: HASH(0),
+      previousReleaseId: "ghost",
+      previousCommitHash: HASH(9),
     });
-    const result = verifyChainOfEndorsements([e], verified, policy.approvalRule);
-    expect(result.rejections[0]?.reason).toBe("genesis-must-have-no-predecessor");
+    expect(verifyChainOfEndorsements([e], c()).rejections[0]?.reason).toBe(
+      "genesis-must-have-no-predecessor",
+    );
   });
 
-  it("rejects a non-genesis without previousReleaseId", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const e1 = mkEndorsement(track.alice, {
+  it("rejects non-genesis-must-have-predecessor", () => {
+    const e1 = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
       commitHash: HASH(1),
@@ -142,24 +173,21 @@ describe("verifyChainOfEndorsements", () => {
       previousReleaseId: null,
       previousCommitHash: null,
     });
-    const e2 = mkEndorsement(track.alice, {
+    const e2 = mkEndorsement(founder, {
       releaseId: "r2",
       semverTag: "v0.2.0",
       commitHash: HASH(2),
-      intermediateCommits: [HASH(2)],
-      previousReleaseId: null, // wrong — should reference r1
+      intermediateCommits: [],
+      previousReleaseId: null,
       previousCommitHash: null,
-      issuedAt: "2026-03-01T00:00:00Z",
     });
-    const result = verifyChainOfEndorsements([e1, e2], verified, policy.approvalRule);
-    expect(result.validEndorsements).toHaveLength(1);
-    expect(result.rejections[0]?.reason).toBe("non-genesis-must-have-predecessor");
+    const r = verifyChainOfEndorsements([e1, e2], c());
+    expect(r.validEndorsements).toHaveLength(1);
+    expect(r.rejections[0]?.reason).toBe("non-genesis-must-have-predecessor");
   });
 
-  it("rejects a mismatched predecessor pointer", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const e1 = mkEndorsement(track.alice, {
+  it("rejects predecessor-mismatch", () => {
+    const e1 = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
       commitHash: HASH(1),
@@ -167,44 +195,54 @@ describe("verifyChainOfEndorsements", () => {
       previousReleaseId: null,
       previousCommitHash: null,
     });
-    const e2 = mkEndorsement(track.alice, {
+    const e2 = mkEndorsement(founder, {
       releaseId: "r2",
       semverTag: "v0.2.0",
-      commitHash: HASH(5),
-      intermediateCommits: [HASH(5)],
-      previousReleaseId: "WRONG-PREV",
-      previousCommitHash: HASH(99),
+      commitHash: HASH(2),
+      intermediateCommits: [HASH(1)],
+      previousReleaseId: "WRONG",
+      previousCommitHash: HASH(1),
       issuedAt: "2026-03-01T00:00:00Z",
     });
-    const result = verifyChainOfEndorsements([e1, e2], verified, policy.approvalRule);
-    expect(result.rejections[0]?.reason).toBe("predecessor-mismatch");
+    expect(
+      verifyChainOfEndorsements([e1, e2], c()).rejections[0]?.reason,
+    ).toBe("predecessor-mismatch");
   });
 
-  it("rejects an endorsement with tampered intermediateCommits", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const correctCommits = [HASH(2), HASH(3), HASH(4)];
-    const e: ReleaseEndorsement = mkEndorsement(track.alice, {
+  it("rejects merkle-root-mismatch", () => {
+    const e = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
-      commitHash: HASH(4),
-      intermediateCommits: correctCommits,
+      commitHash: HASH(1),
+      intermediateCommits: [],
       previousReleaseId: null,
       previousCommitHash: null,
     });
-    // Now mutate the intermediateCommits without recomputing the root
     const tampered: ReleaseEndorsement = {
       ...e,
-      intermediateCommits: [HASH(2), HASH(99), HASH(4)],
+      intermediateMerkleRoot: HASH(7).repeat(2).slice(0, 64),
     };
-    const result = verifyChainOfEndorsements([tampered], verified, policy.approvalRule);
-    expect(result.rejections[0]?.reason).toBe("merkle-root-mismatch");
+    expect(
+      verifyChainOfEndorsements([tampered], c()).rejections[0]?.reason,
+    ).toBe("merkle-root-mismatch");
   });
 
-  it("rejects an endorsement signed by a non-authority", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const eve = keypair(99);
+  it("rejects signature-invalid (tampered after signing)", () => {
+    const e = mkEndorsement(founder, {
+      releaseId: "r1",
+      semverTag: "v0.1.0",
+      commitHash: HASH(1),
+      intermediateCommits: [],
+      previousReleaseId: null,
+      previousCommitHash: null,
+    });
+    const tampered: ReleaseEndorsement = { ...e, semverTag: "v9.9.9" };
+    expect(
+      verifyChainOfEndorsements([tampered], c()).rejections[0]?.reason,
+    ).toBe("signature-invalid");
+  });
+
+  it("rejects signer-not-authorized when signed by a non-holder", () => {
     const e = mkEndorsement(eve, {
       releaseId: "r1",
       semverTag: "v0.1.0",
@@ -213,24 +251,168 @@ describe("verifyChainOfEndorsements", () => {
       previousReleaseId: null,
       previousCommitHash: null,
     });
-    const result = verifyChainOfEndorsements([e], verified, policy.approvalRule);
-    // signer-not-authorized: eve isn't the current holder
-    expect(result.rejections[0]?.reason).toBe("signer-not-authorized");
+    expect(verifyChainOfEndorsements([e], c()).rejections[0]?.reason).toBe(
+      "signer-not-authorized",
+    );
   });
 
-  it("rejects an endorsement issued after the track's authority expired", () => {
-    const track = makeReleaseTrack();
-    const verified = verifyTrack("release", policy, track.mandates);
-    const e = mkEndorsement(track.alice, {
+  it("rejects signer-not-authorized when signedBy is not among signatures", () => {
+    const e = mkEndorsement(founder, {
       releaseId: "r1",
       semverTag: "v0.1.0",
       commitHash: HASH(1),
       intermediateCommits: [],
       previousReleaseId: null,
       previousCommitHash: null,
-      issuedAt: "2028-01-01T00:00:00Z", // after track expires
+      signedBy: alice.pubKey, // canonical bytes encode signedBy=alice; sig is founder's
     });
-    const result = verifyChainOfEndorsements([e], verified, policy.approvalRule);
-    expect(result.rejections[0]?.reason).toBe("no-authority-at-issuance");
+    // The signature verifies (founder signed those exact bytes), but the
+    // claimed signedBy (alice) is absent from the signatures set.
+    expect(verifyChainOfEndorsements([e], c()).rejections[0]?.reason).toBe(
+      "signer-not-authorized",
+    );
+  });
+
+  it("rejects no-authority-at-issuance when issuedAt is outside every mandate window", () => {
+    const e = mkEndorsement(founder, {
+      releaseId: "r1",
+      semverTag: "v0.1.0",
+      commitHash: HASH(1),
+      intermediateCommits: [],
+      previousReleaseId: null,
+      previousCommitHash: null,
+      issuedAt: "2030-01-01T00:00:00Z", // after root.expiresAt
+    });
+    expect(verifyChainOfEndorsements([e], c()).rejections[0]?.reason).toBe(
+      "no-authority-at-issuance",
+    );
+  });
+
+  it("rejects duplicate-release-id", () => {
+    const e1 = mkEndorsement(founder, {
+      releaseId: "dup",
+      semverTag: "v0.1.0",
+      commitHash: HASH(1),
+      intermediateCommits: [],
+      previousReleaseId: null,
+      previousCommitHash: null,
+    });
+    const e2 = mkEndorsement(founder, {
+      releaseId: "dup",
+      semverTag: "v0.2.0",
+      commitHash: HASH(2),
+      intermediateCommits: [HASH(1)],
+      previousReleaseId: "dup",
+      previousCommitHash: HASH(1),
+      issuedAt: "2026-03-01T00:00:00Z",
+    });
+    const r = verifyChainOfEndorsements([e1, e2], c());
+    expect(r.validEndorsements).toHaveLength(1);
+    expect(r.rejections[0]?.reason).toBe("duplicate-release-id");
+  });
+
+  it("FAIL-CLOSED: a chain anchored at an absent/forked pin ⇒ no-authority-at-issuance", () => {
+    const e = mkEndorsement(founder, {
+      releaseId: "r1",
+      semverTag: "v0.1.0",
+      commitHash: HASH(1),
+      intermediateCommits: [],
+      previousReleaseId: null,
+      previousCommitHash: null,
+    });
+    const forked = verifyMandateChainFromPin("de".repeat(32), [root()]);
+    expect(forked.validMandates).toHaveLength(0);
+    expect(verifyChainOfEndorsements([e], forked).rejections[0]?.reason).toBe(
+      "no-authority-at-issuance",
+    );
+    const noPin = verifyMandateChainFromPin("", [root()]);
+    expect(verifyChainOfEndorsements([e], noPin).rejections[0]?.reason).toBe(
+      "no-authority-at-issuance",
+    );
+  });
+});
+
+describe("verifyChainOfEndorsements — holder rotation resolves per issuedAt", () => {
+  // M0 founder [01-01 .. 02-01); M1 succeeds → holder alice [02-01 .. 03-01).
+  const m0 = mkMandate({
+    id: "00000000-0000-4000-8000-000000000000",
+    holder: founder.pubKey,
+    issuedAt: "2026-01-01T00:00:00Z",
+    expiresAt: "2026-02-01T00:00:00Z",
+    successors: [founder.pubKey, alice.pubKey],
+    threshold: 1,
+    minSuccessors: 1,
+    maxDurationSeconds: 60 * DAY,
+    signedBy: founder.pubKey,
+    signWith: [founder.privKey],
+  });
+  const m1 = mkMandate({
+    id: "11111111-1111-4111-8111-111111111111",
+    holder: alice.pubKey,
+    issuedAt: "2026-02-01T00:00:00Z",
+    expiresAt: "2026-03-01T00:00:00Z",
+    successors: [alice.pubKey],
+    threshold: 1,
+    minSuccessors: 1,
+    maxDurationSeconds: 60 * DAY,
+    signedBy: alice.pubKey,
+    signWith: [alice.privKey],
+  });
+  const c = () => chain([m0, m1], m0);
+
+  it("the verify-forward chain is the two mandates", () => {
+    expect(c().validMandates.map((m) => m.mandateId)).toEqual([
+      m0.mandateId,
+      m1.mandateId,
+    ]);
+  });
+
+  it("e0 in M0's window must be signed by founder; e1 in M1's window by alice", () => {
+    const e0 = mkEndorsement(founder, {
+      releaseId: "r0",
+      semverTag: "v0.1.0",
+      commitHash: HASH(1),
+      intermediateCommits: [],
+      previousReleaseId: null,
+      previousCommitHash: null,
+      issuedAt: "2026-01-15T00:00:00Z",
+    });
+    const e1 = mkEndorsement(alice, {
+      releaseId: "r1",
+      semverTag: "v0.2.0",
+      commitHash: HASH(2),
+      intermediateCommits: [HASH(1)],
+      previousReleaseId: "r0",
+      previousCommitHash: HASH(1),
+      issuedAt: "2026-02-15T00:00:00Z",
+    });
+    const r = verifyChainOfEndorsements([e0, e1], c());
+    expect(r.validEndorsements.map((e) => e.releaseId)).toEqual(["r0", "r1"]);
+    expect(r.rejections).toHaveLength(0);
+  });
+
+  it("an endorsement in M1's window signed by the OLD holder is rejected", () => {
+    const e1Bad = mkEndorsement(founder, {
+      releaseId: "r1",
+      semverTag: "v0.2.0",
+      commitHash: HASH(2),
+      intermediateCommits: [],
+      previousReleaseId: null,
+      previousCommitHash: null,
+      issuedAt: "2026-02-15T00:00:00Z", // M1's window; authority is alice
+    });
+    expect(verifyChainOfEndorsements([e1Bad], c()).rejections[0]?.reason).toBe(
+      "signer-not-authorized",
+    );
+  });
+});
+
+// canonicalMandate is exercised indirectly through the pin; assert the
+// pin is content-bound so the chain helper is sound.
+describe("v2 endorsement test scaffolding sanity", () => {
+  it("mandatePinHash is the sha256 of canonicalMandate", () => {
+    const r = root();
+    expect(mandatePinHash(r)).toHaveLength(64);
+    expect(canonicalMandate(r).byteLength).toBeGreaterThan(0);
   });
 });

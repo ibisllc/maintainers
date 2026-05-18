@@ -1,0 +1,81 @@
+{
+  "name": "neg-totality-adversarial-canonicalization",
+  "description": "A non-hex holder injected after signing reaches the forward step; canonicalization throws internally and MUST be caught (totality) ⇒ recorded as a 'signature-invalid' rejection, never an exception; only the root remains ⇒ reject at `now` past the root window.",
+  "input": {
+    "pin": "bfbcfad38c42c1fc68852d63046e14e70a8f9c74787d83ab544489577cc1df9f",
+    "now": "2026-05-01T00:00:00Z",
+    "track": "release",
+    "mandatesByTrack": {
+      "release": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000000",
+          "track": "release",
+          "holder": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-03-02T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "project": {
+            "name": "conformance-fixture",
+            "contact": "security@example.org",
+            "tracks": [
+              "release",
+              "ca"
+            ]
+          },
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "1c78ae94ddf349c014fcd86b61fd917d32f46ca735e260add08adb906c3606da3610faeb55d025f7386e2f07ec9d403ef874b1cd4ae8f95c81620a9d8fdd9309"
+            }
+          ]
+        },
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-000000000001",
+          "track": "release",
+          "holder": "zz00000000000000000000000000000000000000000000000000000000000000",
+          "issuedAt": "2026-02-15T00:00:00Z",
+          "expiresAt": "2026-04-15T00:00:00Z",
+          "successors": [
+            "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 5184000,
+          "defaultDurationSeconds": 5184000,
+          "signedBy": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+          "signatures": [
+            {
+              "pubkey": "cecc1507dc1ddd7295951c290888f095adb9044d1b73d696e6df065d683bd4fc",
+              "sig": "e451bd8f7cee3fd78b477d6bf1d8555de1da177dc7dab6e3fdc9935a5e4391f59a2f0469eb955c434aecb8a1a371ca096e2c224f9f0dc6a86e2ba694f2a3cc0d"
+            }
+          ]
+        }
+      ]
+    },
+    "endorsements": [],
+    "caEndorsements": []
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "signature-invalid",
+    "subject": "mandate-chain",
+    "track": "release"
+  }
+}

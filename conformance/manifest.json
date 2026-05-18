@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "description": "Maintainers protocol conformance vectors. An implementation is conformant iff it produces the expected verdict for EVERY vector, including every fail-closed negative. Schema: docs/spec/v1.md §12.",
+  "count": 17,
+  "vectors": [
+    {
+      "name": "happy-solo-founder-renewal",
+      "file": "vectors/happy-solo-founder-renewal.json",
+      "subject": "mandate-chain",
+      "accepted": true,
+      "rejectReason": null
+    },
+    {
+      "name": "happy-2-of-3-threshold",
+      "file": "vectors/happy-2-of-3-threshold.json",
+      "subject": "mandate-chain",
+      "accepted": true,
+      "rejectReason": null
+    },
+    {
+      "name": "happy-release-endorsement-holder-signed",
+      "file": "vectors/happy-release-endorsement-holder-signed.json",
+      "subject": "release-endorsement",
+      "accepted": true,
+      "rejectReason": null
+    },
+    {
+      "name": "happy-ca-endorsement-fresh-lease",
+      "file": "vectors/happy-ca-endorsement-fresh-lease.json",
+      "subject": "ca-endorsement",
+      "accepted": true,
+      "rejectReason": null
+    },
+    {
+      "name": "neg-1-absent-pin",
+      "file": "vectors/neg-1-absent-pin.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "no-pin"
+    },
+    {
+      "name": "neg-2-forked-unknown-pin",
+      "file": "vectors/neg-2-forked-unknown-pin.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "pin-not-in-log"
+    },
+    {
+      "name": "neg-3-pin-not-in-log-tampered-bytes",
+      "file": "vectors/neg-3-pin-not-in-log-tampered-bytes.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "pin-not-in-log"
+    },
+    {
+      "name": "neg-4-self-renewal-attempt",
+      "file": "vectors/neg-4-self-renewal-attempt.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "signer-not-in-successor-set"
+    },
+    {
+      "name": "neg-5-sub-threshold-signers",
+      "file": "vectors/neg-5-sub-threshold-signers.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "approval-threshold-unmet"
+    },
+    {
+      "name": "neg-6-under-min-successors",
+      "file": "vectors/neg-6-under-min-successors.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "under-min-successors"
+    },
+    {
+      "name": "neg-7-over-max-duration",
+      "file": "vectors/neg-7-over-max-duration.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "over-max-duration"
+    },
+    {
+      "name": "neg-8-endorsement-gap",
+      "file": "vectors/neg-8-endorsement-gap.json",
+      "subject": "release-endorsement",
+      "accepted": false,
+      "rejectReason": "predecessor-mismatch"
+    },
+    {
+      "name": "neg-9-lapsed-lease-at-now",
+      "file": "vectors/neg-9-lapsed-lease-at-now.json",
+      "subject": "ca-endorsement",
+      "accepted": false,
+      "rejectReason": "lease-expired"
+    },
+    {
+      "name": "neg-10a-rolled-back-dropped-intermediate",
+      "file": "vectors/neg-10a-rolled-back-dropped-intermediate.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "signer-not-in-successor-set"
+    },
+    {
+      "name": "neg-10b-tampered-root-signature",
+      "file": "vectors/neg-10b-tampered-root-signature.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "root-signature-invalid"
+    },
+    {
+      "name": "neg-totality-adversarial-canonicalization",
+      "file": "vectors/neg-totality-adversarial-canonicalization.json",
+      "subject": "mandate-chain",
+      "accepted": false,
+      "rejectReason": "signature-invalid"
+    },
+    {
+      "name": "neg-ca-no-pin-fail-closed",
+      "file": "vectors/neg-ca-no-pin-fail-closed.json",
+      "subject": "ca-endorsement",
+      "accepted": false,
+      "rejectReason": "no-ca-authority-at-now"
+    }
+  ]
+}

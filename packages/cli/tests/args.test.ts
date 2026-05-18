@@ -3,8 +3,8 @@ import { parseArgs, requireFlag, optionalFlag, CliError } from "../src/lib/args.
 
 describe("parseArgs", () => {
   it("captures the leading command", () => {
-    const p = parseArgs(["genesis", "--track", "release"]);
-    expect(p.command).toBe("genesis");
+    const p = parseArgs(["upsert-mandate", "--track", "release"]);
+    expect(p.command).toBe("upsert-mandate");
     expect(p.flags.track).toBe("release");
   });
 
@@ -27,12 +27,12 @@ describe("parseArgs", () => {
   });
 
   it("requireFlag throws CliError when missing", () => {
-    const p = parseArgs(["mandate"]);
+    const p = parseArgs(["upsert-mandate"]);
     expect(() => requireFlag(p, "track")).toThrow(CliError);
   });
 
   it("optionalFlag returns undefined when missing", () => {
-    const p = parseArgs(["mandate"]);
+    const p = parseArgs(["upsert-mandate"]);
     expect(optionalFlag(p, "track")).toBeUndefined();
   });
 });

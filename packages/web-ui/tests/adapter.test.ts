@@ -1,86 +1,89 @@
 /**
- * Adapter contract tests.
+ * Adapter contract tests — LOCKED Phase-2 v2 model.
  *
  * We stub `fetch` so the static adapter behaves deterministically and
  * verify the read/write flows. The GitHub OAuth path is exercised by
  * counting the PUT calls and inspecting their bodies. The ZIP fallback
  * is checked by snapshotting the magic bytes of the returned Blob.
  *
+ * v2: there is NO policy.json — folders are version-1 mandates under
+ * `tracks/<track>/mandates/*.json` + keyfiles under `keys/`.
+ *
  * No real network. No real WebAuthn. No DOM.
  */
 
 import { describe, expect, it } from "vitest";
-import { generateKeypair, type Envelope } from "@maintainers/protocol";
 import {
   serverAdapter,
   staticAdapter,
   type AdapterClient,
+  type UiEnvelope,
 } from "../src/adapter.js";
-import {
-  buildGenesisMandate,
-  buildKeyFile,
-  makeGenesisPolicy,
-  makeTrackPolicy,
-  pathForKeyFile,
-  pathForMandate,
-  pathForTrackPolicy,
-  PATH_ROOT_POLICY,
-  serializeEnvelope,
-  serializeJson,
-} from "../src/envelopes.js";
+import { pathForKeyFile, pathForMandate, serializeEnvelope } from "../src/envelopes.js";
+import { kp, mkKeyFile, mk } from "./fixtures.js";
 
-function kp(seedByte: number) {
-  const seed = new Uint8Array(32);
-  seed[0] = seedByte;
-  return generateKeypair(seed);
-}
-
-function genesisBundle() {
+function rootBundle(): { path: string; envelope: UiEnvelope; bytes: Uint8Array }[] {
   const alice = kp(1);
-  const now = new Date("2026-05-11T00:00:00Z");
-  const policy = makeGenesisPolicy("demo", ["release"]);
-  const trackPolicy = makeTrackPolicy("release", 60);
-  const mandate = buildGenesisMandate({
-    holderPub: alice.pubKey,
-    holderPriv: alice.privKey,
-    holderDisplayName: "Alice",
-    holderEmail: "alice@example.com",
-    successors: [],
-    track: "release",
-    now,
-    durationDays: 60,
+  const mandate = mk({
+    id: "root-0000-0000-0000-000000000001",
+    holder: alice.pubKey,
+    issuedAt: "2026-05-11T00:00:00Z",
+    expiresAt: "2026-07-10T00:00:00Z",
+    successors: [alice.pubKey],
+    project: { name: "demo", tracks: ["release"] },
+    signedBy: alice.pubKey,
+    signWith: [alice.privKey],
   });
-  const keyfile = buildKeyFile({
+  const keyfile = mkKeyFile({
     pub: alice.pubKey,
     priv: alice.privKey,
     displayName: "Alice",
     email: "alice@example.com",
-    introductionMandate: mandate.mandateId,
   });
   return [
-    { path: PATH_ROOT_POLICY, envelope: keyfile as Envelope, bytes: serializeJson(policy) },
-    { path: pathForTrackPolicy("release"), envelope: keyfile as Envelope, bytes: serializeJson(trackPolicy) },
-    { path: pathForMandate("release", mandate.issuedAt, "genesis"), envelope: mandate as Envelope, bytes: serializeEnvelope(mandate) },
-    { path: pathForKeyFile("alice@example.com"), envelope: keyfile as Envelope, bytes: serializeEnvelope(keyfile) },
+    {
+      path: pathForMandate("release", mandate.issuedAt, "genesis"),
+      envelope: mandate,
+      bytes: serializeEnvelope(mandate),
+    },
+    {
+      path: pathForKeyFile("alice@example.com"),
+      envelope: keyfile,
+      bytes: serializeEnvelope(keyfile),
+    },
   ];
 }
 
-describe("staticAdapter loadProject", () => {
-  it("fetches raw URLs from the github provider", async () => {
+describe("staticAdapter loadProject (v2)", () => {
+  it("fetches raw mandate URLs from the github provider", async () => {
+    const alice = kp(1);
+    const mandate = mk({
+      id: "g-0000-0000-0000-000000000001",
+      holder: alice.pubKey,
+      issuedAt: "2026-05-11T00:00:00Z",
+      expiresAt: "2026-07-10T00:00:00Z",
+      successors: [alice.pubKey],
+      project: { name: "demo", tracks: ["release"] },
+      signedBy: alice.pubKey,
+      signWith: [alice.privKey],
+    });
+    const rel = pathForMandate("release", mandate.issuedAt, "genesis");
     const seen: string[] = [];
     const fakeFetch = (async (url: string | Request | URL): Promise<Response> => {
       const u = url.toString();
       seen.push(u);
-      if (u.endsWith("/policy.json")) {
-        return new Response(JSON.stringify({ schemaVersion: 1, project: { name: "demo" }, tracks: ["release"] }), { status: 200 });
+      if (u.endsWith(`/.maintainers/${rel}`)) {
+        return new Response(new TextDecoder().decode(serializeEnvelope(mandate)), { status: 200 });
       }
       return new Response("", { status: 404 });
     }) as unknown as typeof fetch;
-    const adapter = staticAdapter({ fetchImpl: fakeFetch });
+    const adapter = staticAdapter({ fetchImpl: fakeFetch, knownPaths: [rel] });
     const result = await adapter.loadProject("github.com/foo/bar");
     expect(result.ref.canonical).toBe("github.com/foo/bar");
-    expect(result.folder.rootPolicy?.project.name).toBe("demo");
-    expect(seen.some((u) => u.includes("raw.githubusercontent.com/foo/bar/main/.maintainers/policy.json"))).toBe(true);
+    expect(result.folder.tracks[0]!.mandates[0]!.project?.name).toBe("demo");
+    expect(
+      seen.some((u) => u.includes(`raw.githubusercontent.com/foo/bar/main/.maintainers/${rel}`)),
+    ).toBe(true);
   });
 
   it("uses knownPaths if provided to avoid the tree API", async () => {
@@ -89,22 +92,18 @@ describe("staticAdapter loadProject", () => {
       called++;
       const u = url.toString();
       if (u.includes("api.github.com")) {
-        // tree API should NOT be consulted when knownPaths is set
         throw new Error("tree API should not have been called");
-      }
-      if (u.endsWith("/policy.json")) {
-        return new Response(JSON.stringify({ schemaVersion: 1, project: { name: "x" }, tracks: [] }), { status: 200 });
       }
       return new Response("", { status: 404 });
     }) as unknown as typeof fetch;
-    const adapter = staticAdapter({ fetchImpl: fakeFetch, knownPaths: ["policy.json"] });
+    const adapter = staticAdapter({ fetchImpl: fakeFetch, knownPaths: ["README.md"] });
     await adapter.loadProject("github.com/a/b");
     expect(called).toBeGreaterThan(0);
   });
 
   it("reports exists=false when the folder is empty", async () => {
     const fakeFetch = (async () => new Response("", { status: 404 })) as unknown as typeof fetch;
-    const adapter = staticAdapter({ fetchImpl: fakeFetch, knownPaths: ["policy.json"] });
+    const adapter = staticAdapter({ fetchImpl: fakeFetch, knownPaths: ["README.md"] });
     const result = await adapter.loadProject("github.com/empty/repo");
     expect(result.exists).toBe(false);
   });
@@ -116,7 +115,7 @@ describe("staticAdapter submit (ZIP fallback)", () => {
     const adapter = staticAdapter({ fetchImpl: fakeFetch });
     const result = await adapter.submitBundle({
       repoUrl: "github.com/foo/bar",
-      entries: genesisBundle(),
+      entries: rootBundle(),
     });
     expect(result.kind).toBe("downloadable");
     if (result.kind !== "downloadable") return;
@@ -144,7 +143,7 @@ describe("staticAdapter submit (OAuth)", () => {
       return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 200 });
     }) as unknown as typeof fetch;
     const adapter = staticAdapter({ fetchImpl: fakeFetch, oauthToken: "tok" });
-    const entries = genesisBundle();
+    const entries = rootBundle();
     const result = await adapter.submitBundle({
       repoUrl: "github.com/foo/bar",
       entries,
@@ -157,9 +156,26 @@ describe("staticAdapter submit (OAuth)", () => {
     expect(calls.every((c) => c.url.includes("api.github.com"))).toBe(true);
     expect(calls.every((c) => c.url.includes(".maintainers/"))).toBe(true);
   });
+
+  it("submitEnvelope derives a v2 default commit message", async () => {
+    const calls: { body: string }[] = [];
+    const fakeFetch = (async (_url: string | Request | URL, init?: RequestInit): Promise<Response> => {
+      calls.push({ body: typeof init?.body === "string" ? init.body : "" });
+      return new Response(JSON.stringify({ content: { sha: "z" } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const adapter = staticAdapter({ fetchImpl: fakeFetch, oauthToken: "tok" });
+    const [entry] = rootBundle();
+    await adapter.submitEnvelope({
+      repoUrl: "github.com/foo/bar",
+      path: entry!.path,
+      envelope: entry!.envelope,
+      bytes: entry!.bytes,
+    });
+    expect(calls[0]!.body).toContain("maintainers: release mandate");
+  });
 });
 
-describe("serverAdapter contract", () => {
+describe("serverAdapter contract (v2)", () => {
   it("posts the bundle to /submitBundle", async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     const fakeFetch = (async (url: string | Request | URL, init?: RequestInit): Promise<Response> => {
@@ -177,7 +193,7 @@ describe("serverAdapter contract", () => {
     });
     const result = await adapter.submitBundle({
       repoUrl: "github.com/foo/bar",
-      entries: genesisBundle(),
+      entries: rootBundle(),
     });
     expect(result.kind).toBe("committed");
     if (result.kind === "committed") expect(result.sha).toBe("deadbeef");
@@ -187,11 +203,21 @@ describe("serverAdapter contract", () => {
     expect(headers["Authorization"]).toBe("Bearer tok");
   });
 
-  it("loadProject calls the right endpoint and decodes base64 files", async () => {
-    const fileBytes = new TextEncoder().encode(
-      JSON.stringify({ schemaVersion: 1, project: { name: "from-server" }, tracks: ["release"] }),
-    );
+  it("loadProject calls the right endpoint and decodes base64 v2 mandate files", async () => {
+    const alice = kp(2);
+    const mandate = mk({
+      id: "srv-0000-0000-0000-000000000001",
+      holder: alice.pubKey,
+      issuedAt: "2026-01-01T00:00:00Z",
+      expiresAt: "2026-03-01T00:00:00Z",
+      successors: [alice.pubKey],
+      project: { name: "from-server", tracks: ["release"] },
+      signedBy: alice.pubKey,
+      signWith: [alice.privKey],
+    });
+    const fileBytes = serializeEnvelope(mandate);
     const b64 = btoa(String.fromCharCode(...fileBytes));
+    const rel = pathForMandate("release", mandate.issuedAt, "genesis");
     const fakeFetch = (async (url: string | Request | URL): Promise<Response> => {
       const u = url.toString();
       if (u.includes("/loadProject")) {
@@ -204,7 +230,7 @@ describe("serverAdapter contract", () => {
               ref: "main",
               canonical: "github.com/foo/bar",
             },
-            files: { "policy.json": b64 },
+            files: { [rel]: b64 },
             exists: true,
           }),
           { status: 200 },
@@ -214,7 +240,7 @@ describe("serverAdapter contract", () => {
     }) as unknown as typeof fetch;
     const adapter = serverAdapter({ baseUrl: "https://example.test", fetchImpl: fakeFetch });
     const result = await adapter.loadProject("github.com/foo/bar");
-    expect(result.folder.rootPolicy?.project.name).toBe("from-server");
+    expect(result.folder.tracks[0]!.mandates[0]!.project?.name).toBe("from-server");
     expect(result.exists).toBe(true);
   });
 });

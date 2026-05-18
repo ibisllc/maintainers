@@ -13,7 +13,15 @@
  * folder; write returns either "committed" or "downloadable").
  */
 
-import type { Envelope } from "@maintainers/protocol";
+import type {
+  CaEndorsement,
+  EmailRotation,
+  KeyFile,
+  KeyIntroductionRequest,
+  KeyRedirect,
+  Mandate,
+  ReleaseEndorsement,
+} from "@maintainers/protocol";
 import {
   type ParsedFolder,
   type RawFolder,
@@ -27,6 +35,23 @@ import {
   pickProvider,
 } from "./repo-provider.js";
 import { buildZip } from "./zip.js";
+
+/**
+ * The adapter's envelope union. Deliberately NOT the protocol
+ * `Envelope` (which still carries the v1 `Mandate` member until
+ * c4.5e): web-ui is v2-only, so a Mandate here is always a
+ * `Mandate`. Mirrors the cloudflare-worker `WorkerEnvelope` shape
+ * (c4.5a) so both consumers are off the v1 path while v1 still
+ * coexists in protocol.
+ */
+export type UiEnvelope =
+  | Mandate
+  | KeyFile
+  | KeyRedirect
+  | EmailRotation
+  | KeyIntroductionRequest
+  | ReleaseEndorsement
+  | CaEndorsement;
 
 export interface LoadedProject {
   ref: RepoRef;
@@ -55,7 +80,7 @@ export interface SubmitInput {
   repoUrl: string;
   /** Path relative to `.maintainers/` (e.g. `tracks/release/mandates/2026-05-11-genesis.json`). */
   path: string;
-  envelope: Envelope;
+  envelope: UiEnvelope;
   /** Pre-serialized canonical-bytes form. The adapter writes these bytes verbatim. */
   bytes: Uint8Array;
   /** Optional commit message hint. */
@@ -64,8 +89,8 @@ export interface SubmitInput {
 
 export interface BulkSubmitInput {
   repoUrl: string;
-  /** Multiple envelopes to commit/download together (e.g. genesis = policy + mandate + keyfile). */
-  entries: { path: string; envelope: Envelope; bytes: Uint8Array }[];
+  /** Multiple envelopes to commit/download together (e.g. a root mandate + keyfiles). */
+  entries: { path: string; envelope: UiEnvelope; bytes: Uint8Array }[];
   message?: string;
 }
 
@@ -219,7 +244,7 @@ function filenameForBundle(ref: RepoRef, entries: { path: string }[]): string {
   return `${ref.owner}-${ref.repo}-maintainers-bundle.zip`;
 }
 
-function defaultMessageForEnvelope(env: Envelope): string {
+function defaultMessageForEnvelope(env: UiEnvelope): string {
   switch (env.kind) {
     case "Mandate":
       return `maintainers: ${env.track} mandate ${env.mandateId.slice(0, 8)}`;
@@ -248,8 +273,12 @@ function defaultMessageForEnvelope(env: Envelope): string {
  *   2. Otherwise, probe the provider's tree API for `.maintainers/` and
  *      recurse one level (deep enough for our layout).
  *   3. If the tree API isn't accessible (rate limit, private repo,
- *      etc.), fall back to probing well-known fixed paths (policy.json,
- *      tracks/release/policy.json, ...).
+ *      etc.), fall back to probing the only fixed-name file the v2
+ *      on-disk convention has (README.md). v2 has NO policy.json — the
+ *      succession rule is inline in each mandate — and mandate
+ *      filenames are content-derived, so without the tree API the log
+ *      can't be enumerated by name; the UI then renders "no mandates"
+ *      rather than guessing.
  */
 async function discoverMaintainersFolder(
   fetchImpl: typeof fetch,
@@ -282,14 +311,9 @@ async function discoverMaintainersFolder(
     }
   }
 
-  // Probe well-known paths
-  const probes = [
-    "policy.json",
-    "README.md",
-    "tracks/release/policy.json",
-    "tracks/ca/policy.json",
-    "tracks/ops/policy.json",
-  ];
+  // v2 has no fixed-name policy files; README.md is the only
+  // predictable path without the tree API.
+  const probes = ["README.md"];
   for (const p of probes) await fetchOne(p);
   return files;
 }

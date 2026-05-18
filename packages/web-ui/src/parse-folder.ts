@@ -3,9 +3,12 @@
  * structured object the UI can navigate without re-parsing JSON on
  * every render.
  *
- * This module is intentionally tolerant: it surfaces parse errors per
- * file rather than throwing, so a single malformed envelope doesn't
- * blank the whole UI. The verifier (in @maintainers/protocol) is the
+ * **LOCKED Phase-2 v2 model.** There is NO policy.json (root or track):
+ * the succession rule is folded into each mandate. A track is just
+ * `tracks/<track>/mandates/*.json`, each a version-1 Mandate. This
+ * module is intentionally tolerant: it surfaces parse errors per file
+ * rather than throwing, so a single malformed envelope doesn't blank
+ * the whole UI. The verifier (in @maintainers/protocol) is the
  * authority on what's accepted; this layer just unpacks bytes into
  * typed shapes.
  */
@@ -15,8 +18,6 @@ import type {
   KeyRedirect,
   Mandate,
   ReleaseEndorsement,
-  RootPolicy,
-  TrackPolicy,
 } from "@maintainers/protocol";
 
 export interface RawFolder {
@@ -26,9 +27,9 @@ export interface RawFolder {
 
 export interface ParsedTrack {
   name: string;
-  policy: TrackPolicy | null;
+  /** Track mandates, version-1-filtered, sorted by issuedAt ascending. */
   mandates: Mandate[];
-  /** Files we tried to parse as mandates but couldn't. */
+  /** Files we tried to parse as v2 mandates but couldn't. */
   malformedMandates: ParseError[];
 }
 
@@ -41,7 +42,12 @@ export interface ParsedKey {
 }
 
 export interface ParsedFolder {
-  rootPolicy: RootPolicy | null;
+  /**
+   * Project metadata, when a from-scratch (root) mandate carries it.
+   * v2 replaces RootPolicy with the inline `project` on the root
+   * mandate; populated lazily by the project view from the verified
+   * chain, so this is purely the parsed surface.
+   */
   tracks: ParsedTrack[];
   keys: ParsedKey[];
   endorsements: ReleaseEndorsement[];
@@ -58,20 +64,13 @@ export interface ParseError {
 const DECODER = new TextDecoder("utf-8");
 
 export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
-  let rootPolicy: RootPolicy | null = null;
-  const trackMap = new Map<string, { policy: TrackPolicy | null; mandates: Mandate[]; malformed: ParseError[] }>();
+  const trackMap = new Map<string, { mandates: Mandate[]; malformed: ParseError[] }>();
   const keyMap = new Map<string, ParsedKey>();
   const endorsements: ReleaseEndorsement[] = [];
   const malformedEndorsements: ParseError[] = [];
   const unknownFiles: string[] = [];
 
   for (const [path, bytes] of raw.files) {
-    if (path === "policy.json") {
-      const v = safeJson(bytes);
-      if (v && isRootPolicy(v)) rootPolicy = v;
-      else unknownFiles.push(path);
-      continue;
-    }
     if (path === "README.md") continue;
     if (path.startsWith("keys/")) {
       const rest = path.slice("keys/".length);
@@ -100,16 +99,16 @@ export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
       const trackName = trackPath.slice(0, slashIdx);
       const rest = trackPath.slice(slashIdx + 1);
       const entry = ensureTrack(trackMap, trackName);
-      if (rest === "policy.json") {
-        const v = safeJson(bytes);
-        if (v && isTrackPolicy(v)) entry.policy = v;
-        else entry.malformed.push({ path, reason: "policy.json malformed" });
-        continue;
-      }
       if (rest.startsWith("mandates/") && rest.endsWith(".json")) {
         const v = safeJson(bytes);
-        if (v && (v as { kind?: string }).kind === "Mandate") {
+        if (
+          v &&
+          (v as { kind?: string }).kind === "Mandate" &&
+          (v as { version?: number }).version === 1
+        ) {
           entry.mandates.push(v as Mandate);
+        } else if (v && (v as { kind?: string }).kind === "Mandate") {
+          entry.malformed.push({ path, reason: "not a version-1 Mandate" });
         } else {
           entry.malformed.push({ path, reason: "not a Mandate envelope" });
         }
@@ -130,12 +129,13 @@ export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
     unknownFiles.push(path);
   }
 
-  // Sort tracks alphabetically; mandates within a track by issuedAt;
-  // endorsements globally by issuedAt.
+  // Sort tracks alphabetically; mandates within a track by issuedAt
+  // (the canonical-log substitute — issuedAt is signed, so backdating
+  // is defeated by the forward verifier); endorsements globally by
+  // issuedAt.
   const tracks: ParsedTrack[] = [...trackMap.entries()]
     .map(([name, e]) => ({
       name,
-      policy: e.policy,
       mandates: [...e.mandates].sort((a, b) => Date.parse(a.issuedAt) - Date.parse(b.issuedAt)),
       malformedMandates: e.malformed,
     }))
@@ -143,7 +143,6 @@ export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
   endorsements.sort((a, b) => Date.parse(a.issuedAt) - Date.parse(b.issuedAt));
 
   return {
-    rootPolicy,
     tracks,
     keys: [...keyMap.values()],
     endorsements,
@@ -161,31 +160,15 @@ export function parseMaintainersFolder(raw: RawFolder): ParsedFolder {
 }
 
 function ensureTrack(
-  map: Map<string, { policy: TrackPolicy | null; mandates: Mandate[]; malformed: ParseError[] }>,
+  map: Map<string, { mandates: Mandate[]; malformed: ParseError[] }>,
   name: string,
-): { policy: TrackPolicy | null; mandates: Mandate[]; malformed: ParseError[] } {
+): { mandates: Mandate[]; malformed: ParseError[] } {
   let entry = map.get(name);
   if (!entry) {
-    entry = { policy: null, mandates: [], malformed: [] };
+    entry = { mandates: [], malformed: [] };
     map.set(name, entry);
   }
   return entry;
-}
-
-function isRootPolicy(v: unknown): v is RootPolicy {
-  if (!v || typeof v !== "object") return false;
-  const o = v as Record<string, unknown>;
-  return o["schemaVersion"] === 1 && typeof o["project"] === "object" && Array.isArray(o["tracks"]);
-}
-
-function isTrackPolicy(v: unknown): v is TrackPolicy {
-  if (!v || typeof v !== "object") return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o["track"] === "string" &&
-    typeof o["defaultMandateDuration"] === "string" &&
-    typeof o["approvalRule"] === "object"
-  );
 }
 
 /**

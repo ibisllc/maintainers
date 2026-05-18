@@ -6,48 +6,19 @@
  * change; there is no virtual DOM and no per-node diff — these
  * pages are small enough that wholesale re-renders are cheaper than
  * the cognitive load of a diff engine.
+ *
+ * **#31 — STATUS / PREVIEW ONLY (LOCKED Phase-2 v2 model).** No signing
+ * happens here, so there is no onboarding draft / wizard state: only
+ * home + the read-only project view.
  */
 
-import type { Mandate } from "@maintainers/protocol";
 import type { AdapterClient, LoadedProject } from "./adapter.js";
-import type { MaintainerIdentity } from "./webauthn.js";
 
 export type Route =
   | { kind: "home" }
-  | { kind: "onboard"; step: OnboardStep }
-  | { kind: "project"; repoUrl: string; view: ProjectView }
-  | { kind: "renew"; repoUrl: string; track: string }
-  | { kind: "takeover"; repoUrl: string; track: string };
-
-export type OnboardStep =
-  | "project"
-  | "yubikey"
-  | "name-key"
-  | "cadence"
-  | "successor"
-  | "review"
-  | "commit"
-  | "done";
+  | { kind: "project"; repoUrl: string; view: ProjectView };
 
 export type ProjectView = "health" | "roster" | "activity";
-
-export interface OnboardDraft {
-  repoUrl: string;
-  projectName: string;
-  identity: MaintainerIdentity | null;
-  displayName: string;
-  email: string;
-  cadenceDays: 30 | 60 | 90 | 180;
-  successorMode: "enroll" | "paste" | "skip";
-  successor: {
-    pubKey?: string;
-    displayName?: string;
-    email?: string;
-    identity?: MaintainerIdentity | null;
-  };
-  committedSha?: string;
-  downloadFilename?: string;
-}
 
 export interface AppState {
   adapter: AdapterClient;
@@ -58,9 +29,6 @@ export interface AppState {
   loaded: LoadedProject | null;
   loading: boolean;
   error: string | null;
-  draft: OnboardDraft;
-  /** Active mandate being acted on (for renew/takeover flows). */
-  currentMandate?: Mandate;
 }
 
 export type Listener = (s: AppState) => void;
@@ -78,25 +46,8 @@ export class StateStore {
     for (const l of this.listeners) l(this.state);
   }
 
-  patchDraft(patch: Partial<OnboardDraft>): void {
-    this.update({ draft: { ...this.state.draft, ...patch } });
-  }
-
   subscribe(l: Listener): () => void {
     this.listeners.add(l);
     return () => this.listeners.delete(l);
   }
-}
-
-export function defaultDraft(): OnboardDraft {
-  return {
-    repoUrl: "",
-    projectName: "",
-    identity: null,
-    displayName: "",
-    email: "",
-    cadenceDays: 60,
-    successorMode: "skip",
-    successor: {},
-  };
 }

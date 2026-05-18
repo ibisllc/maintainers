@@ -59,20 +59,20 @@ describe("pickProvider", () => {
   it("constructs raw URL for github correctly", () => {
     const ref = parseRepoUrl("github.com/foo/bar");
     const provider = pickProvider(ref);
-    const url = provider.rawContentUrl(ref, ".maintainers/policy.json");
-    expect(url).toBe("https://raw.githubusercontent.com/foo/bar/main/.maintainers/policy.json");
+    const url = provider.rawContentUrl(ref, ".maintainers/tracks/release/mandates/m.json");
+    expect(url).toBe("https://raw.githubusercontent.com/foo/bar/main/.maintainers/tracks/release/mandates/m.json");
   });
   it("constructs raw URL for codeberg correctly", () => {
     const ref = parseRepoUrl("codeberg.org/foo/bar@develop");
     const provider = pickProvider(ref);
-    const url = provider.rawContentUrl(ref, ".maintainers/policy.json");
-    expect(url).toBe("https://codeberg.org/foo/bar/raw/branch/develop/.maintainers/policy.json");
+    const url = provider.rawContentUrl(ref, ".maintainers/tracks/release/mandates/m.json");
+    expect(url).toBe("https://codeberg.org/foo/bar/raw/branch/develop/.maintainers/tracks/release/mandates/m.json");
   });
   it("constructs raw URL for gitlab correctly", () => {
     const ref = parseRepoUrl("gitlab.com/foo/bar");
     const provider = pickProvider(ref);
-    const url = provider.rawContentUrl(ref, ".maintainers/policy.json");
-    expect(url).toBe("https://gitlab.com/foo/bar/-/raw/main/.maintainers/policy.json");
+    const url = provider.rawContentUrl(ref, ".maintainers/tracks/release/mandates/m.json");
+    expect(url).toBe("https://gitlab.com/foo/bar/-/raw/main/.maintainers/tracks/release/mandates/m.json");
   });
   it("throws for an unknown host", () => {
     const ref = parseRepoUrl("internal.example.com/foo/bar");
