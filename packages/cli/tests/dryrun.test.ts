@@ -32,7 +32,10 @@ import {
   assembleCaEndorsement,
   buildCaEndorsement,
 } from "../src/commands/caEndorsement.js";
-import { assembleUpsertMandate } from "../src/commands/upsertMandate.js";
+import {
+  assembleUpsertMandate,
+  buildUpsertMandate,
+} from "../src/commands/upsertMandate.js";
 import { signAssembled } from "../src/lib/ceremony.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
@@ -212,6 +215,75 @@ describe("upsert-mandate --dry-run", () => {
       expect(out).toContain(hex(a.canonical));
       expect(out).toContain(hex(canonicalMandate(a.unsigned)));
       expect(out).not.toContain('"signatures"');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("byte-fidelity: from-scratch genesis dry-run preview bytes EQUAL canonicalMandate of the envelope a real signed run produces (uuid/timestamps pinned)", async () => {
+    // The security contract: the bytes a `--dry-run` previews for a
+    // from-scratch genesis upsert-mandate are EXACTLY the bytes a real
+    // signed run would sign. uuid + timestamps differ across invocations,
+    // so they are held FIXED (injected `now`/`uuid`) — the dryrun.test.ts
+    // pattern — and we assert canonical-bytes equality + the real
+    // signature verifies over precisely the previewed bytes.
+    const founder = keypair(2);
+    const backup = keypair(3);
+    const { tmp, root } = tmpRoot("dry-um-fid-");
+    try {
+      const bpub = path.join(tmp, "backup.pub");
+      fs.writeFileSync(bpub, backup.pubKey);
+
+      const common = {
+        track: "ca",
+        holderSource: undefined,
+        successorsSource: `file:${bpub}`,
+        duration: "3650d",
+        threshold: undefined,
+        minSuccessors: undefined,
+        maxDuration: undefined,
+        defaultDuration: undefined,
+        project: { name: "flagship", contact: "harry@flagship.services" },
+        rootDir: root,
+        now: () => NOW, // PINNED
+        uuid: () => UUID, // PINNED
+      } as const;
+
+      // The dry-run preview's assembled bytes (PIV public read, no PIN).
+      const preview = await assembleUpsertMandate({
+        ...common,
+        signingKeySource: "yubikey-piv:slot=9c",
+        io: { readFileSync: (p: string) => fs.readFileSync(p, "utf8") },
+        pivTransport: readOnlyToken(founder.pubKey),
+        pivPin: forbidPin,
+      });
+
+      // The SAME assembled envelope, signed for real (file: hex path so
+      // the test needs no token to produce a genuine signature).
+      const fpriv = path.join(tmp, "f.priv");
+      fs.writeFileSync(fpriv, founder.privKey);
+      const real = await buildUpsertMandate({
+        ...common,
+        signingKeySource: `file:${fpriv}`,
+        io: { readFileSync: (p: string) => fs.readFileSync(p, "utf8") },
+      });
+
+      // 1. The previewed canonical bytes EQUAL canonicalMandate of the
+      //    real signed envelope's unsigned projection — byte-for-byte.
+      const { signatures, ...realUnsigned } = real;
+      expect(realUnsigned).toEqual(preview.unsigned);
+      expect(hex(preview.canonical)).toBe(hex(canonicalMandate(realUnsigned)));
+      // 2. The real signature verifies over PRECISELY the previewed bytes.
+      expect(real.signedBy).toBe(founder.pubKey);
+      expect(real.holder).toBe(founder.pubKey); // genesis is self-signed
+      expect(real.successors).toEqual([backup.pubKey]);
+      expect(real.project).toEqual({
+        name: "flagship",
+        contact: "harry@flagship.services",
+      });
+      expect(verify(signatures[0]!.sig, preview.canonical, founder.pubKey)).toBe(
+        true,
+      );
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

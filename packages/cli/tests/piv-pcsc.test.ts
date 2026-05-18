@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import {
   pcscPivTransport,
   connectPcscChannel,
+  PcscBuildError,
+  isRecoverableNotReady,
   type PcscChannel,
 } from "../src/lib/piv-pcsc.js";
 import { CliError } from "../src/lib/args.js";
@@ -114,14 +116,19 @@ describe("pcscPivTransport", () => {
 });
 
 describe("connectPcscChannel — fail-closed, no silent fallback", () => {
-  it("throws a precise CliError when the optional binding is absent", async () => {
+  it("throws a precise PcscBuildError (NOT recoverable) when the binding is absent", async () => {
     let err: unknown;
     try {
       await connectPcscChannel();
     } catch (e) {
       err = e;
     }
+    // Still a CliError (existing dispatch/exit-1 path unchanged) AND the
+    // typed build discriminator so the connect loop does NOT retry it
+    // (a missing binding is not a missing reader).
     expect(err).toBeInstanceOf(CliError);
+    expect(err).toBeInstanceOf(PcscBuildError);
+    expect(isRecoverableNotReady(err)).toBe(false);
     const m = (err as Error).message;
     expect(m).toMatch(/native PIV\/PC\/SC transport is not wired in this build/);
     expect(m).toMatch(/never silently falls back/);

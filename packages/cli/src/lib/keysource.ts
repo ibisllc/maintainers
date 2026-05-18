@@ -238,6 +238,47 @@ export const realPivTransport: PivTransport = {
   },
 };
 
+/**
+ * Build a {@link PivTransport} whose channel is obtained through the
+ * no-hardware UX state machine ({@link connectPcscChannelWithPrompt}):
+ * *absent reader / token / not-tapped-yet* are prompted + waited + polled
+ * + retried (a normal recoverable state, NOT a fatal error), while a
+ * security failure or the build-not-wired condition still fail-closed
+ * with NO weaker-key fallback. Non-interactive contexts fail closed
+ * deterministically (never hang). This is the production wrapper used by
+ * the CLI's `defaultEnv`; tests inject their own fake `PivTransport`
+ * directly and never touch this. The connect factory is injectable so
+ * the wrapper itself stays unit-testable without hardware.
+ */
+export function pivTransportWithPrompt(promptOpts: {
+  prompt: (line: string) => void;
+  interactive: boolean;
+  connect?: () => Promise<import("./piv-pcsc.js").PcscChannel>;
+}): PivTransport {
+  const channel = async () => {
+    const { connectPcscChannelWithPrompt } = await import("./piv-connect.js");
+    const { pcscPivTransport } = await import("./piv-pcsc.js");
+    return pcscPivTransport(
+      await connectPcscChannelWithPrompt({
+        prompt: promptOpts.prompt,
+        interactive: promptOpts.interactive,
+        ...(promptOpts.connect ? { connect: promptOpts.connect } : {}),
+      }),
+    );
+  };
+  return {
+    async getPublicKey(slot) {
+      return (await channel()).getPublicKey(slot);
+    },
+    async signEd25519(slot, pin, message) {
+      return (await channel()).signEd25519(slot, pin, message);
+    },
+    async generateEd25519(slot, policy) {
+      return (await channel()).generateEd25519(slot, policy);
+    },
+  };
+}
+
 export interface SignerOptions {
   io?: KeySourceFs;
   /** PIV transport for `yubikey-piv:` sources (default: realPivTransport). */

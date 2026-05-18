@@ -29,6 +29,7 @@
 import { CliError, parseArgs, type ParsedArgs } from "./lib/args.js";
 import {
   realFs,
+  pivTransportWithPrompt,
   type KeySourceFs,
   type PivTransport,
   type PivPinProvider,
@@ -67,6 +68,17 @@ export const defaultEnv: CliEnv = {
   println: (line: string) => process.stdout.write(line + "\n"),
   printerr: (line: string) => process.stderr.write(line + "\n"),
   confirm: ttyConfirm,
+  // The production PIV transport routes through the no-hardware UX state
+  // machine: absent reader/token/not-tapped-yet are prompted+polled+
+  // retried (recoverable, never fatal); a security failure or the
+  // build-not-wired condition still fail-closed with NO weaker-key
+  // fallback; a non-interactive context fails closed deterministically.
+  // The wait/retry guidance goes to stderr so it never contaminates the
+  // signed-bytes stdout preview.
+  pivTransport: pivTransportWithPrompt({
+    prompt: (line: string) => process.stderr.write(line + "\n"),
+    interactive: Boolean(process.stdin.isTTY),
+  }),
 };
 
 export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
@@ -155,3 +167,14 @@ export {
   type Assembled,
   type ConfirmFn,
 } from "./lib/ceremony.js";
+export {
+  PcscNotReadyError,
+  PcscSecurityError,
+  PcscBuildError,
+  isRecoverableNotReady,
+} from "./lib/piv-pcsc.js";
+export {
+  connectPcscChannelWithPrompt,
+  type ConnectWithPromptOptions,
+  type ChannelFactory,
+} from "./lib/piv-connect.js";
