@@ -36,7 +36,8 @@ export type CeremonyKind =
   | "mandate"
   | "takeover"
   | "ca-endorsement"
-  | "create-key";
+  | "create-key"
+  | "upsert-mandate";
 
 /**
  * The output of an `assemble*` call: everything needed to either preview
@@ -127,6 +128,17 @@ function bannerBody<U>(a: Assembled<U>, head: string): string[] {
         "CA LEASE — authorize the hot operational CA pubkey until notAfter.",
         "A LAPSED lease fail-closes the CA globally (no revocation list) —",
         "renew before notAfter. Overlapping leases are fine.",
+        head,
+      ];
+    case "upsert-mandate":
+      // Neutral header; assemble supplies the from-scratch-ORIGIN vs
+      // succession specifics via `bannerExtra` (it knows the sub-case
+      // this static switch cannot see).
+      return [
+        head,
+        "UPSERT MANDATE — issue the next mandate on this track. The",
+        "predecessor's embedded rule (approvalRule over its successors)",
+        "governs whether this is accepted; there is NO self-renewal.",
         head,
       ];
     case "create-key":

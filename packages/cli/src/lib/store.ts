@@ -21,6 +21,7 @@ import type {
   CaEndorsement,
   KeyFile,
   Mandate,
+  MandateV2,
   ReleaseEndorsement,
   RootPolicy,
   TrackPolicy,
@@ -108,6 +109,65 @@ export function writeMandate(rootDir: string, m: Mandate): WrittenPath {
   }
   fs.writeFileSync(abs, JSON.stringify(m, null, 2) + "\n", "utf8");
   return { absolute: abs, relative: path.relative(rootDir, abs) };
+}
+
+/**
+ * Read a track's v2 mandate log (LOCKED Phase-2 v2). Same on-disk
+ * directory convention as v1 (`tracks/<track>/mandates/*.json`,
+ * filename-sorted as the canonical-log substitute — real adapters get
+ * order from git), but filtered to `version === 2`. There is NO
+ * `policy.json` in v2: the succession policy is folded INTO each
+ * mandate. The published static-fetch layout (`tracks/<t>/log.json`)
+ * is a later (c5) distribution artifact; the CLI's authoring store
+ * stays file-per-mandate.
+ */
+export function readMandatesV2(rootDir: string, track: string): MandateV2[] {
+  const dir = path.join(rootDir, "tracks", track, "mandates");
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
+  const out: MandateV2[] = [];
+  for (const f of files) {
+    const parsed = readJson(path.join(dir, f));
+    if (isMandateV2(parsed)) out.push(parsed);
+  }
+  return out;
+}
+
+/**
+ * Write a v2 mandate under `tracks/<track>/mandates/<compact-iso>-<id>.json`.
+ * Append-only (refuse-overwrite); the from-scratch (root) mandate and
+ * every successor are distinct files, by design.
+ */
+export function writeMandateV2(rootDir: string, m: MandateV2): WrittenPath {
+  const dir = path.join(rootDir, "tracks", m.track, "mandates");
+  fs.mkdirSync(dir, { recursive: true });
+  const abs = path.join(dir, mandateFilename(m));
+  if (fs.existsSync(abs)) {
+    throw new CliError(`refusing to overwrite existing mandate file: ${abs}`);
+  }
+  fs.writeFileSync(abs, JSON.stringify(m, null, 2) + "\n", "utf8");
+  return { absolute: abs, relative: path.relative(rootDir, abs) };
+}
+
+function isMandateV2(x: unknown): x is MandateV2 {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return (
+    o.kind === "Mandate" &&
+    o.version === 2 &&
+    typeof o.mandateId === "string" &&
+    typeof o.track === "string" &&
+    typeof o.holder === "string" &&
+    typeof o.issuedAt === "string" &&
+    typeof o.expiresAt === "string" &&
+    Array.isArray(o.successors) &&
+    typeof o.approvalRule === "object" &&
+    o.approvalRule !== null &&
+    typeof o.minSuccessors === "number" &&
+    typeof o.maxDurationSeconds === "number" &&
+    typeof o.signedBy === "string" &&
+    Array.isArray(o.signatures)
+  );
 }
 
 export function writeEndorsement(rootDir: string, e: ReleaseEndorsement): WrittenPath {
