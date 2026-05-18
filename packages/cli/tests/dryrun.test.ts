@@ -1,9 +1,11 @@
 /**
- * `--dry-run` for the four maintainer-key ceremonies (#28).
+ * `--dry-run` for the maintainer-key ceremonies (#28), LOCKED Phase-2
+ * v2. genesis/mandate/takeover collapsed into the ONE `upsert-mandate`
+ * verb, so the dry-run surface is upsert-mandate + ca-endorsement.
  *
  * The security contract proven here:
  *   1. dry-run prints the EXACT canonical bytes a real run would sign
- *      (hex == Buffer.from(assemble().canonical)), plus the unsigned
+ *      (hex == the assembled `canonical`), plus the unsigned
  *      `.maintainers` diff;
  *   2. dry-run signs NOTHING and writes NOTHING — proven by a token
  *      whose sign/PIN paths throw if touched, yet dry-run still exits 0;
@@ -18,28 +20,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-  canonicalMandate,
   canonicalCaEndorsement,
+  canonicalMandateV2,
   generateKeypair,
   sign,
+  signMandateV2With,
   verify,
-  signMandateWith,
-  type Mandate,
+  type MandateV2,
 } from "@maintainers/protocol";
-import {
-  assembleGenesis,
-  buildGenesis,
-} from "../src/commands/genesis.js";
-import { assembleRenewal } from "../src/commands/mandate.js";
-import { assembleTakeover } from "../src/commands/takeover.js";
 import {
   assembleCaEndorsement,
   buildCaEndorsement,
 } from "../src/commands/caEndorsement.js";
+import { assembleUpsertMandate } from "../src/commands/upsertMandate.js";
 import { signAssembled } from "../src/lib/ceremony.js";
 import { dispatch, type CliEnv } from "../src/index.js";
 import { parseArgs } from "../src/lib/args.js";
-import { writeMandate, writeTrackPolicyIfMissing } from "../src/lib/store.js";
 import type { PivTransport } from "../src/lib/keysource.js";
 
 function keypair(seedByte: number) {
@@ -167,26 +163,24 @@ describe("ca-endorsement --dry-run", () => {
   });
 });
 
-describe("genesis/mandate/takeover --dry-run", () => {
-  it("genesis dry-run: no policy.json, no mandate, exact bytes", async () => {
+describe("upsert-mandate --dry-run", () => {
+  it("from-scratch dry-run: no mandate written, exact canonicalMandateV2 bytes, no PIN/tap", async () => {
     const maintainer = keypair(2);
-    const { tmp, root } = tmpRoot("dry-g-");
-    const pub = path.join(tmp, "m.pub");
-    fs.writeFileSync(pub, maintainer.pubKey);
+    const { tmp, root } = tmpRoot("dry-um-");
     try {
       const lines: string[] = [];
       const code = await dispatch(
         parseArgs([
-          "genesis",
+          "upsert-mandate",
           "--track",
           "ca",
           "--duration",
           "365d",
-          "--holder-key",
-          `file:${pub}`,
           "--signing-key",
           "yubikey-piv:slot=9c",
-          "--output",
+          "--project-name",
+          "flagship",
+          "--path",
           root,
           "--dry-run",
         ]),
@@ -194,110 +188,30 @@ describe("genesis/mandate/takeover --dry-run", () => {
       );
       expect(code).toBe(0);
       expect(fs.existsSync(path.join(root, "tracks"))).toBe(false);
-      const a = await assembleGenesis({
+      const a = await assembleUpsertMandate({
         track: "ca",
-        duration: "365d",
-        holderKeySource: `file:${pub}`,
         signingKeySource: "yubikey-piv:slot=9c",
+        holderSource: undefined,
         successorsSource: undefined,
-        outputDir: root,
+        duration: "365d",
+        threshold: undefined,
+        minSuccessors: undefined,
+        maxDuration: undefined,
+        defaultDuration: undefined,
+        project: { name: "flagship" },
+        rootDir: root,
         now: () => NOW,
-        io: { readFileSync: (p: string) => fs.readFileSync(p, "utf8") },
+        io: { readFileSync: () => "" },
         uuid: () => UUID,
         pivTransport: readOnlyToken(maintainer.pubKey),
         pivPin: forbidPin,
       });
       const out = lines.join("\n");
-      expect(out).toContain("DRY RUN — genesis");
+      expect(out).toContain("DRY RUN — upsert-mandate");
+      expect(out).toContain("FROM-SCRATCH ORIGIN");
       expect(out).toContain(hex(a.canonical));
-      expect(out).toContain("if missing");
-      expect(out).toContain("tracks/ca/policy.json");
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("mandate + takeover dry-run over an on-disk genesis write nothing", async () => {
-    const maintainer = keypair(3);
-    const succ = keypair(4);
-    const { tmp, root } = tmpRoot("dry-mt-");
-    const succPub = path.join(tmp, "s.pub");
-    fs.writeFileSync(succPub, succ.pubKey);
-    try {
-      // Seed a real ca-track genesis on disk (holder=maintainer,
-      // successors=[succ]) so mandate/takeover have a predecessor.
-      writeTrackPolicyIfMissing(root, {
-        track: "ca",
-        defaultMandateDuration: "365d",
-        approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-      });
-      const genesis = await buildGenesis({
-        track: "ca",
-        duration: "30d",
-        holderKeySource: "file:hpub",
-        signingKeySource: "file:hpriv",
-        successorsSource: "file:spub",
-        outputDir: undefined,
-        now: () => new Date("2026-01-01T00:00:00Z"),
-        io: {
-          readFileSync: (p: string) =>
-            p === "hpub"
-              ? maintainer.pubKey
-              : p === "hpriv"
-                ? maintainer.privKey
-                : succ.pubKey,
-        },
-        uuid: () => "genesis0-0000-0000-0000-000000000000",
-      });
-      writeMandate(root, genesis);
-      const before = fs.readdirSync(path.join(root, "tracks/ca/mandates")).length;
-
-      // mandate dry-run (signer = current holder = maintainer)
-      const ml: string[] = [];
-      const mc = await dispatch(
-        parseArgs([
-          "mandate",
-          "--track",
-          "ca",
-          "--duration",
-          "30d",
-          "--signing-key",
-          "yubikey-piv:slot=9c",
-          "--path",
-          root,
-          "--dry-run",
-        ]),
-        mkEnv(ml, readOnlyToken(maintainer.pubKey), forbidPin),
-      );
-      expect(mc).toBe(0);
-      expect(ml.join("\n")).toContain("DRY RUN — mandate");
-
-      // takeover dry-run (now past genesis expiry; signer = successor)
-      const tl: string[] = [];
-      const tc = await dispatch(
-        parseArgs([
-          "takeover",
-          "--track",
-          "ca",
-          "--successor-key",
-          "yubikey-piv:slot=9c",
-          "--new-holder",
-          `file:${succPub}`,
-          "--path",
-          root,
-          "--dry-run",
-        ]),
-        {
-          ...mkEnv(tl, readOnlyToken(succ.pubKey), forbidPin),
-          now: () => new Date("2026-03-01T00:00:00Z"),
-        },
-      );
-      expect(tc).toBe(0);
-      expect(tl.join("\n")).toContain("DRY RUN — takeover");
-
-      // Not a single new file from either dry-run.
-      const after = fs.readdirSync(path.join(root, "tracks/ca/mandates")).length;
-      expect(after).toBe(before);
+      expect(out).toContain(hex(canonicalMandateV2(a.unsigned)));
+      expect(out).not.toContain('"signatures"');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -308,29 +222,33 @@ describe("signAssembled fail-closed guard", () => {
   it("refuses when the resolved signer ≠ the assembled signedBy", async () => {
     const a = keypair(5);
     const b = keypair(6);
-    const unsigned: Omit<Mandate, "signatures"> = {
+    const unsigned: Omit<MandateV2, "signatures"> = {
       kind: "Mandate",
-      version: 1,
+      version: 2,
       mandateId: "m-guard",
       track: "ca",
       holder: a.pubKey,
       issuedAt: "2026-05-17T12:00:00.000Z",
       expiresAt: "2026-06-17T12:00:00.000Z",
       successors: [a.pubKey],
+      approvalRule: { kind: "threshold", threshold: 1 },
+      minSuccessors: 1,
+      maxDurationSeconds: 365 * 86_400,
+      defaultDurationSeconds: 60 * 86_400,
       signedBy: a.pubKey,
     };
     await expect(
       signAssembled(
         {
-          ceremony: "mandate",
+          ceremony: "upsert-mandate",
           unsigned,
-          canonical: canonicalMandate(unsigned),
+          canonical: canonicalMandateV2(unsigned),
           signingKeySource: "yubikey-piv:slot=9c",
           signedBy: a.pubKey,
           rootDir: ".maintainers",
           targetRelative: "tracks/ca/mandates/x.json",
         },
-        signMandateWith,
+        signMandateV2With,
         {
           pivTransport: {
             async getPublicKey() {

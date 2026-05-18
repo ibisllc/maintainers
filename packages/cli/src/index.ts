@@ -2,11 +2,10 @@
  * maintainers CLI entrypoint.
  *
  * Usage:
- *   maintainers genesis        --track <name> --duration <60d> --holder-key <key> [--signing-key <key>] [--dry-run]
- *   maintainers mandate        --track <name> --duration <60d> --signing-key <key> [--successors a,b] [--dry-run]
+ *   maintainers upsert-mandate --track <name> --signing-key <key> --duration <60d> [--holder <key>] [--successors a,b] [--threshold N] [--min-successors N] [--max-duration 365d] [--default-duration 60d] [--project-name P ...] [--dry-run]
  *   maintainers endorsement    --commit <40hex> --tag <semver> [--previous-id <uuid> --previous-commit <40hex>] [--intermediates auto|file:X|csv] --signing-key <key>
  *   maintainers ca-endorsement --ca-pubkey <64hex> [--scope S] [--duration 7d] [--track ca] --signing-key <key> [--dry-run]
- *   maintainers takeover       --track <name> --successor-key <key> --new-holder <key> [--dry-run]
+ *   maintainers create-key     --signing-key <key> --display-name NAME --email ADDR [--dry-run]
  *
  *   --dry-run: print the EXACT canonical bytes a real run would sign + the
  *   would-write .maintainers diff; sign nothing, write nothing, no PIN/tap
@@ -36,12 +35,9 @@ import {
 } from "./lib/keysource.js";
 import { ttyConfirm, type ConfirmFn } from "./lib/ceremony.js";
 import { newUuid } from "./lib/uuid.js";
-import { runGenesis } from "./commands/genesis.js";
-import { runMandate } from "./commands/mandate.js";
 import { runEndorsement } from "./commands/endorsement.js";
 import { runCaEndorsement } from "./commands/caEndorsement.js";
 import { runCreateKey } from "./commands/createKey.js";
-import { runTakeover } from "./commands/takeover.js";
 import { runUpsertMandate } from "./commands/upsertMandate.js";
 import { runStatus, runVerify } from "./commands/verify.js";
 
@@ -76,10 +72,6 @@ export const defaultEnv: CliEnv = {
 export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
   try {
     switch (args.command) {
-      case "genesis":
-        return await runGenesis(args, env);
-      case "mandate":
-        return await runMandate(args, env);
       case "endorsement":
         return await runEndorsement(args, env);
       case "ca-endorsement":
@@ -88,8 +80,6 @@ export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
         return await runCreateKey(args, env);
       case "upsert-mandate":
         return await runUpsertMandate(args, env);
-      case "takeover":
-        return await runTakeover(args, env);
       case "verify":
         return await runVerify(args, env);
       case "status":
@@ -132,13 +122,11 @@ function printUsage(println: (s: string) => void): void {
   println("maintainers — authority-management CLI");
   println("");
   println("commands:");
-  println("  genesis         --track NAME --duration 60d --holder-key KEY [--signing-key KEY] [--successors A,B] [--output DIR] [--dry-run]");
-  println("  mandate         --track NAME --duration 60d --signing-key KEY [--successors A,B] [--path .maintainers] [--dry-run]");
+  println("  upsert-mandate  --track NAME --signing-key KEY --duration 60d [--holder KEY] [--successors A,B] [--threshold N] [--min-successors N] [--max-duration 365d] [--default-duration 60d] [--project-name P --project-contact C --project-homepage H --project-tracks a,b] [--path .maintainers] [--dry-run]");
+  println("                  (the ONE mandate verb — genesis/renew/takeover/repolicy all collapse into this; the predecessor's inline rule governs each step, there is NO self-renewal)");
   println("  endorsement     --commit 40HEX --tag SEMVER --signing-key KEY [--previous-id UUID --previous-commit 40HEX] [--intermediates auto|file:X|csv] [--track release] [--path .maintainers]");
   println("  ca-endorsement  --ca-pubkey 64HEX --signing-key KEY [--scope S] [--duration 7d] [--track ca] [--path .maintainers] [--dry-run]");
-  println("  takeover        --track NAME --successor-key KEY --new-holder KEY [--successors A,B] [--duration 60d] [--path .maintainers] [--dry-run]");
   println("  create-key      --signing-key KEY --display-name NAME --email ADDR [--introduction-mandate UUID] [--photo URL] [--github H] [--role R] [--path .maintainers] [--dry-run]");
-  println("  upsert-mandate  --track NAME --signing-key KEY --duration 60d [--holder KEY] [--successors A,B] [--threshold N] [--min-successors N] [--max-duration 365d] [--default-duration 60d] [--project-name P --project-contact C --project-homepage H --project-tracks a,b] [--path .maintainers] [--dry-run]");
   println("  verify          [--path .maintainers] [--as-of RFC3339|now]");
   println("  status          [--path .maintainers] [--as-of RFC3339|now]");
   println("");
@@ -152,11 +140,8 @@ function printUsage(println: (s: string) => void): void {
 
 // Re-exports so tests and embedders can drive the CLI without spawning a process.
 export { parseArgs } from "./lib/args.js";
-export { buildGenesis, assembleGenesis } from "./commands/genesis.js";
-export { buildRenewal, assembleRenewal } from "./commands/mandate.js";
 export { buildEndorsement } from "./commands/endorsement.js";
 export { buildCaEndorsement, assembleCaEndorsement } from "./commands/caEndorsement.js";
-export { buildTakeover, assembleTakeover } from "./commands/takeover.js";
 export { buildCreateKey, assembleCreateKey } from "./commands/createKey.js";
 export { buildUpsertMandate, assembleUpsertMandate } from "./commands/upsertMandate.js";
 export { buildReport } from "./commands/verify.js";

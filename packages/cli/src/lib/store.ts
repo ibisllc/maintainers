@@ -1,18 +1,23 @@
 /**
- * On-disk .maintainers/ folder I/O.
+ * On-disk .maintainers/ folder I/O (LOCKED Phase-2 v2 model).
  *
- * Matches §7 of the spec:
  *   .maintainers/
- *   ├── policy.json
  *   ├── keys/<email>.json
- *   ├── tracks/<track>/policy.json
- *   ├── tracks/<track>/mandates/<iso>-<summary>.json
+ *   ├── tracks/<track>/mandates/<iso>-<id>.json   (v2 MandateV2 only)
  *   ├── endorsements/<semver-tag>.json
- *   └── ca-endorsements/<iso>-<short-id>.json   (the weekly CA lease)
+ *   └── ca-endorsements/<iso>-<short-id>.json      (the weekly CA lease)
  *
- * The reader returns parsed envelopes; the writer canonicalizes filenames and
- * refuses to overwrite. Both sides are pure-fs and have no git awareness —
- * git is the canonical-log layer above us.
+ * There is **no `policy.json`** (root or per-track) in v2: the
+ * succession rule (approvalRule + successors + minSuccessors +
+ * maxDurationSeconds) lives INLINE in each `MandateV2`, and the
+ * project-level contact/track-list rides the from-scratch (root)
+ * mandate's inline `project` field (L2). A v1 `Mandate` file
+ * (`version: 1`) is malformed for this store and is silently ignored,
+ * never parsed.
+ *
+ * The reader returns parsed v2 envelopes; the writer canonicalizes
+ * filenames and refuses to overwrite. Both sides are pure-fs and have no
+ * git awareness — git is the canonical-log layer above us.
  */
 
 import * as fs from "node:fs";
@@ -20,59 +25,30 @@ import * as path from "node:path";
 import type {
   CaEndorsement,
   KeyFile,
-  Mandate,
   MandateV2,
   ReleaseEndorsement,
-  RootPolicy,
-  TrackPolicy,
 } from "@maintainers/protocol";
 import { CliError } from "./args.js";
 
 export interface MaintainersStore {
   rootDir: string;
-  rootPolicy: RootPolicy | null;
-  trackPolicies: Map<string, TrackPolicy>;
-  mandatesByTrack: Map<string, Mandate[]>;
+  mandatesByTrack: Map<string, MandateV2[]>;
   endorsements: ReleaseEndorsement[];
 }
 
 export function readStore(rootDir: string): MaintainersStore {
   const out: MaintainersStore = {
     rootDir,
-    rootPolicy: null,
-    trackPolicies: new Map(),
     mandatesByTrack: new Map(),
     endorsements: [],
   };
-
-  const rootPolicyPath = path.join(rootDir, "policy.json");
-  if (fs.existsSync(rootPolicyPath)) {
-    out.rootPolicy = readJson(rootPolicyPath) as RootPolicy;
-  }
 
   const tracksDir = path.join(rootDir, "tracks");
   if (fs.existsSync(tracksDir) && fs.statSync(tracksDir).isDirectory()) {
     for (const name of fs.readdirSync(tracksDir).sort()) {
       const trackDir = path.join(tracksDir, name);
       if (!fs.statSync(trackDir).isDirectory()) continue;
-      const policyPath = path.join(trackDir, "policy.json");
-      if (fs.existsSync(policyPath)) {
-        out.trackPolicies.set(name, readJson(policyPath) as TrackPolicy);
-      }
-      const mandatesDir = path.join(trackDir, "mandates");
-      if (fs.existsSync(mandatesDir) && fs.statSync(mandatesDir).isDirectory()) {
-        const files = fs.readdirSync(mandatesDir)
-          .filter((f) => f.endsWith(".json"))
-          .sort();
-        const arr: Mandate[] = [];
-        for (const f of files) {
-          const parsed = readJson(path.join(mandatesDir, f));
-          if (isMandate(parsed)) arr.push(parsed);
-        }
-        out.mandatesByTrack.set(name, arr);
-      } else {
-        out.mandatesByTrack.set(name, []);
-      }
+      out.mandatesByTrack.set(name, readMandatesV2(rootDir, name));
     }
   }
 
@@ -99,27 +75,14 @@ export interface WrittenPath {
   relative: string;
 }
 
-export function writeMandate(rootDir: string, m: Mandate): WrittenPath {
-  const dir = path.join(rootDir, "tracks", m.track, "mandates");
-  fs.mkdirSync(dir, { recursive: true });
-  const file = mandateFilename(m);
-  const abs = path.join(dir, file);
-  if (fs.existsSync(abs)) {
-    throw new CliError(`refusing to overwrite existing mandate file: ${abs}`);
-  }
-  fs.writeFileSync(abs, JSON.stringify(m, null, 2) + "\n", "utf8");
-  return { absolute: abs, relative: path.relative(rootDir, abs) };
-}
-
 /**
- * Read a track's v2 mandate log (LOCKED Phase-2 v2). Same on-disk
- * directory convention as v1 (`tracks/<track>/mandates/*.json`,
- * filename-sorted as the canonical-log substitute — real adapters get
- * order from git), but filtered to `version === 2`. There is NO
- * `policy.json` in v2: the succession policy is folded INTO each
- * mandate. The published static-fetch layout (`tracks/<t>/log.json`)
- * is a later (c5) distribution artifact; the CLI's authoring store
- * stays file-per-mandate.
+ * Read a track's v2 mandate log (LOCKED Phase-2 v2). On-disk directory
+ * convention `tracks/<track>/mandates/*.json`, filename-sorted as the
+ * canonical-log substitute (real adapters get order from git), filtered
+ * to `version === 2`. There is NO `policy.json`: the succession policy
+ * is folded INTO each mandate. The published static-fetch layout
+ * (`tracks/<t>/log.json`) is a later (c5) distribution artifact; the
+ * CLI's authoring store stays file-per-mandate.
  */
 export function readMandatesV2(rootDir: string, track: string): MandateV2[] {
   const dir = path.join(rootDir, "tracks", track, "mandates");
@@ -242,36 +205,15 @@ export function writeKeyFile(rootDir: string, k: KeyFile): WrittenPath {
   return { absolute: abs, relative: path.relative(rootDir, abs) };
 }
 
-export function writeTrackPolicyIfMissing(
-  rootDir: string,
-  policy: TrackPolicy,
-): WrittenPath | null {
-  const dir = path.join(rootDir, "tracks", policy.track);
-  fs.mkdirSync(dir, { recursive: true });
-  const abs = path.join(dir, "policy.json");
-  if (fs.existsSync(abs)) return null;
-  fs.writeFileSync(abs, JSON.stringify(policy, null, 2) + "\n", "utf8");
-  return { absolute: abs, relative: path.relative(rootDir, abs) };
-}
-
-export function writeRootPolicyIfMissing(
-  rootDir: string,
-  policy: RootPolicy,
-): WrittenPath | null {
-  fs.mkdirSync(rootDir, { recursive: true });
-  const abs = path.join(rootDir, "policy.json");
-  if (fs.existsSync(abs)) return null;
-  fs.writeFileSync(abs, JSON.stringify(policy, null, 2) + "\n", "utf8");
-  return { absolute: abs, relative: path.relative(rootDir, abs) };
-}
-
 /**
  * Build a mandate filename: `<iso-zulu-compact>-<short-id>.json`. The compact
  * timestamp keeps directory listings sortable; the short id disambiguates
  * mandates issued in the same second. Accepts the unsigned shape too so the
  * `--dry-run` preview can show the exact path that WOULD be written.
  */
-export function mandateFilename(m: Pick<Mandate, "issuedAt" | "mandateId">): string {
+export function mandateFilename(
+  m: Pick<MandateV2, "issuedAt" | "mandateId">,
+): string {
   const compact = m.issuedAt.replace(/[:\-]/g, "").replace(/\..*Z$/, "Z").replace(/Z$/, "");
   const safeCompact = compact.replace(/[^0-9T]/g, "");
   const shortId = m.mandateId.slice(0, 8);
@@ -309,20 +251,6 @@ function readJson(p: string): unknown {
   } catch (err) {
     throw new CliError(`failed to parse JSON in ${p}: ${err instanceof Error ? err.message : String(err)}`);
   }
-}
-
-function isMandate(x: unknown): x is Mandate {
-  if (typeof x !== "object" || x === null) return false;
-  const obj = x as Record<string, unknown>;
-  return obj.kind === "Mandate" && obj.version === 1
-    && typeof obj.mandateId === "string"
-    && typeof obj.track === "string"
-    && typeof obj.holder === "string"
-    && typeof obj.issuedAt === "string"
-    && typeof obj.expiresAt === "string"
-    && Array.isArray(obj.successors)
-    && typeof obj.signedBy === "string"
-    && Array.isArray(obj.signatures);
 }
 
 function isReleaseEndorsement(x: unknown): x is ReleaseEndorsement {

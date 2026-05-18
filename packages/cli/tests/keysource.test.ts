@@ -5,8 +5,8 @@ import {
   verify,
   signCaEndorsement,
   signCaEndorsementWith,
-  signMandate,
-  signMandateWith,
+  signMandateV2,
+  signMandateV2With,
   canonicalCaEndorsement,
 } from "@maintainers/protocol";
 import { CliError } from "../src/lib/args.js";
@@ -135,13 +135,17 @@ describe("loadSigner / PivTransport seam (#28)", () => {
   });
   const mandateUnsigned = (holder: string) => ({
     kind: "Mandate" as const,
-    version: 1 as const,
+    version: 2 as const,
     mandateId: "m1",
     track: "ca",
     holder,
     issuedAt: "2026-03-01T00:00:00Z",
     expiresAt: "2026-09-01T00:00:00Z",
     successors: [holder],
+    approvalRule: { kind: "threshold" as const, threshold: 1 },
+    minSuccessors: 1,
+    maxDurationSeconds: 365 * 86_400,
+    defaultDurationSeconds: 60 * 86_400,
     signedBy: holder,
   });
 
@@ -163,9 +167,9 @@ describe("loadSigner / PivTransport seam (#28)", () => {
       pivPin: async () => "123456",
     });
     expect(signer.pubKey).toBe(a.pubKey);
-    const m = await signMandateWith(mandateUnsigned(a.pubKey), [signer]);
+    const m = await signMandateV2With(mandateUnsigned(a.pubKey), [signer]);
     expect(m).toEqual(
-      signMandate(mandateUnsigned(a.pubKey), [{ privKey: a.privKey }]),
+      signMandateV2(mandateUnsigned(a.pubKey), [{ privKey: a.privKey }]),
     );
     expect(
       verify(

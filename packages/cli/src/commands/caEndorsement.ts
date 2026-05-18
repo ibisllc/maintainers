@@ -52,7 +52,7 @@ import {
   previewConfirmSign,
   signAssembled,
 } from "../lib/ceremony.js";
-import { readStore, writeCaEndorsement, caEndorsementFilename } from "../lib/store.js";
+import { readMandatesV2, writeCaEndorsement, caEndorsementFilename } from "../lib/store.js";
 
 export const DEFAULT_CA_SCOPE = "flagship/directory-attestation";
 export const DEFAULT_CA_TRACK = "ca";
@@ -171,8 +171,7 @@ export interface CaEndorsementCmdEnv {
  */
 function onDiskCaAuthority(rootDir: string, track: string): Set<string> {
   const out = new Set<string>();
-  const store = readStore(rootDir);
-  for (const m of store.mandatesByTrack.get(track) ?? []) {
+  for (const m of readMandatesV2(rootDir, track)) {
     if (typeof m.holder === "string") out.add(m.holder);
     for (const s of m.successors ?? []) out.add(s);
   }
@@ -210,9 +209,10 @@ export async function runCaEndorsement(
   if (authority.size === 0) {
     env.println(
       `note: no "${track}"-track mandates found under ${rootDir}; cannot ` +
-        `locally confirm this signer is the ${track} authority (genesis ` +
-        `may not be present yet). Verifiers decide authority at their own ` +
-        `clock — issue it, but check with "rotate-ca status".`,
+        `locally confirm this signer is the ${track} authority (the ` +
+        `from-scratch "upsert-mandate" may not be present yet). Verifiers ` +
+        `decide authority at their own clock — issue it, but check with ` +
+        `"rotate-ca status".`,
     );
   } else if (!authority.has(a.signedBy)) {
     env.println(
