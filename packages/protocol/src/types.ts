@@ -154,6 +154,77 @@ export interface CaEndorsement {
   signatures: SignatureEntry[];
 }
 
+// ---------------------------------------------------------------------------
+// Mandate v2 — LOCKED Phase-2 v2 model (docs/spec/v2.md; flagship
+// docs/v1-launch-program.md "Phase-2 DESIGN DECISION — LOCKED v2").
+//
+// Three changes vs v1, all in one envelope:
+//   L1  the pinned mandate is an INDEPENDENT trust anchor; consumers
+//       verify FORWARD from whatever mandate's canonical hash they baked.
+//       Genesis is merely "the first pin"; multiple pins coexist forever.
+//   L2  the succession policy lives INSIDE the mandate (no policy.json,
+//       no SignedPolicy): `approvalRule` + `successors` + `minSuccessors`
+//       + `maxDurationSeconds` govern the NEXT mandate, signed into THIS
+//       one.
+//   L3  ONE uniform succession rule, no privileged self-renewal: K+1 is
+//       valid iff its signatures satisfy K's `approvalRule` over K's
+//       `successors` set AND K+1 obeys K's `minSuccessors`/`maxDuration`.
+//       Renewal = rotation = takeover = repolicy = that one mechanism.
+// ---------------------------------------------------------------------------
+
+/**
+ * v2 approval rule: a threshold over the *predecessor's* `successors`
+ * set. `successors` IS the named pubkey set; `threshold` is the N. The
+ * v1 `of: "anyAuthorizedSigner" | Pubkey[]` ambiguity is gone — the rule
+ * is fully self-contained inside the signed mandate.
+ */
+export interface ApprovalRuleV2 {
+  kind: "threshold";
+  /** distinct `successors` signatures required to authorise the NEXT mandate. */
+  threshold: number;
+}
+
+/** Project-level metadata, present ONLY on a from-scratch (root) mandate. */
+export interface MandateProject {
+  name: string;
+  contact?: string;
+  homepage?: string;
+  /** the project's declared track list (informational; replaces RootPolicy). */
+  tracks?: string[];
+}
+
+export interface MandateV2 {
+  kind: "Mandate";
+  version: 2;
+  mandateId: Uuid;
+  track: string;
+  /** operational authority for the track (signs ReleaseEndorsement / CaEndorsement). */
+  holder: Pubkey;
+  issuedAt: Iso8601;
+  expiresAt: Iso8601;
+  /** the authorised signer set for the NEXT mandate (K+1). */
+  successors: Pubkey[];
+  /** how many distinct `successors` signatures K+1 needs. */
+  approvalRule: ApprovalRuleV2;
+  /** K+1.successors.length MUST be >= this (anti-rubber-hose floor). */
+  minSuccessors: number;
+  /** (K+1.expiresAt - K+1.issuedAt) seconds MUST be <= this. */
+  maxDurationSeconds: number;
+  /** the tool's default K+1 window in seconds (signed, NOT verifier-load-bearing). */
+  defaultDurationSeconds: number;
+  /** present only on the from-scratch (root) mandate. */
+  project?: MandateProject;
+  signedBy: Pubkey;
+  signatures: SignatureEntry[];
+}
+
+// NOTE: MandateV2 is deliberately NOT in `Envelope`. `Envelope` is the
+// v1 generic-storage-adapter union (kind-discriminated switches in the
+// worker/web-ui adapters); v2 is pin-anchored and self-contained
+// (canonicalMandateV2 / signMandateV2 / verifyMandateChainFromPin). The
+// store/adapter rework that carries v2 lands with the static-layout
+// redesign — keeping it out here keeps the v2 protocol core additive
+// and non-breaking.
 export type Envelope =
   | Mandate
   | KeyFile

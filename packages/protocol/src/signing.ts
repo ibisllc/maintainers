@@ -11,6 +11,7 @@
 
 import {
   canonicalMandate,
+  canonicalMandateV2,
   canonicalKeyFile,
   canonicalKeyRedirect,
   canonicalEmailRotation,
@@ -21,6 +22,7 @@ import {
 import { sign, pubKeyFromPriv } from "./crypto.js";
 import type {
   Mandate,
+  MandateV2,
   KeyFile,
   KeyRedirect,
   EmailRotation,
@@ -34,6 +36,25 @@ export function signMandate(
   signers: { privKey: string }[],
 ): Mandate {
   const bytes = canonicalMandate(unsigned);
+  const signatures = signers.map(({ privKey }) => ({
+    pubkey: pubKeyFromPriv(privKey),
+    sig: sign(bytes, privKey),
+  }));
+  return { ...unsigned, signatures };
+}
+
+/**
+ * Sign a v2 mandate (LOCKED Phase-2 v2). One or more signers; the
+ * verify-forward walk later checks they satisfy the *predecessor's*
+ * embedded approvalRule over its successors set. A from-scratch (root)
+ * mandate is self-signed by its holder and trusted purely via the pin.
+ * Byte-identical RFC-8032 Ed25519 over {@link canonicalMandateV2}.
+ */
+export function signMandateV2(
+  unsigned: Omit<MandateV2, "signatures">,
+  signers: { privKey: string }[],
+): MandateV2 {
+  const bytes = canonicalMandateV2(unsigned);
   const signatures = signers.map(({ privKey }) => ({
     pubkey: pubKeyFromPriv(privKey),
     sig: sign(bytes, privKey),
@@ -176,6 +197,15 @@ export async function signMandateWith(
   signers: Ed25519Signer[],
 ): Promise<Mandate> {
   const bytes = canonicalMandate(unsigned);
+  return { ...unsigned, signatures: await collectSignatures(bytes, signers) };
+}
+
+/** {@link signMandateV2} with external (e.g. YubiKey-PIV) signers. */
+export async function signMandateV2With(
+  unsigned: Omit<MandateV2, "signatures">,
+  signers: Ed25519Signer[],
+): Promise<MandateV2> {
+  const bytes = canonicalMandateV2(unsigned);
   return { ...unsigned, signatures: await collectSignatures(bytes, signers) };
 }
 
