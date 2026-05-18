@@ -268,11 +268,12 @@ function renderInto(root: ShadowRoot, state: OverlayState, cb: OverlayCallbacks)
     body.appendChild(renderAlarm(a, cb));
   }
 
-  if (!state.policyPresent) {
-    body.appendChild(textBlock("empty", "No .maintainers/policy.json on this repo"));
-  } else if (state.tracks.length === 0) {
-    body.appendChild(textBlock("empty", "Policy declares zero tracks"));
+  if (state.tracks.length === 0) {
+    body.appendChild(textBlock("empty", "No .maintainers/ data on this repo"));
   } else {
+    if (!state.policyPresent) {
+      body.appendChild(textBlock("empty", "No verifiable mandate chain on any track"));
+    }
     for (const t of state.tracks) {
       body.appendChild(renderTrack(t));
     }
@@ -296,7 +297,7 @@ function renderHeader(state: OverlayState, cb: OverlayCallbacks, panel: HTMLElem
   const title = el("div", { className: "title" });
   title.textContent = state.projectName;
   const repoLine = el("div", { className: "repo" });
-  repoLine.textContent = "maintainers v1";
+  repoLine.textContent = "maintainers";
   titleWrap.appendChild(title);
   titleWrap.appendChild(repoLine);
 

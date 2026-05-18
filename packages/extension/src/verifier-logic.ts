@@ -1,26 +1,36 @@
 /**
- * Wraps the @maintainers/protocol verifier into a UI-ready shape.
+ * Wraps the @maintainers/protocol v2 verifier into a UI-ready shape.
+ * **LOCKED Phase-2 v2 model** (Mandate v2; verify FORWARD from a pinned
+ * mandate; no policy.json; holder-signs endorsements).
  *
- * Inputs: parsed RootPolicy + per-track TrackPolicy + per-track Mandates +
- * KeyFiles + ReleaseEndorsements.
+ * **#31 — STATUS / PREVIEW ONLY.** The browser extension verifies
+ * arbitrary repos in-browser and has NO compiled-in
+ * `MAINTAINER_PINNED_MANDATE_HASH`. It therefore anchors each track's
+ * forward verification at the FIRST on-repo mandate's
+ * `mandatePinHash` — the read-only-preview anchor (the same no-baked-pin
+ * pattern as the worker's `summarizeState` / the web-ui project view).
+ * This is inspection only: the v2 security boundary is UNCHANGED — real
+ * trust is the pin a downstream consumer BAKES into its signed build and
+ * walks forward from. An empty mandate list ⇒
+ * `verifyMandateChainFromPin("", …)` ⇒ `rootError:"no-pin"` ⇒
+ * fail-closed (the #30 invariant, generalised).
  *
+ * Inputs: per-track v2 Mandates + KeyFiles + ReleaseEndorsements.
  * Outputs: per-track current holder card + named successors with display
  * info + recent activity timeline + derived alarms (takeover, email
- * rotation, chain gap).
+ * rotation, chain gap, expiring-soon).
  */
 import {
-  currentAuthority,
-  lastExpiredMandate,
-  verifyTrack,
-  verifyChainOfEndorsements,
-  type Mandate,
+  currentAuthorityV2,
+  mandatePinHash,
+  verifyChainOfEndorsementsV2,
+  verifyMandateChainFromPin,
   type KeyFile,
-  type ReleaseEndorsement,
-  type RootPolicy,
-  type TrackPolicy,
-  type VerifiedTrack,
+  type MandateV2,
   type Pubkey,
+  type ReleaseEndorsement,
   type TakeoverAlarm,
+  type VerifiedChainV2,
 } from "@maintainers/protocol";
 
 export type AlarmLevel = "red" | "yellow" | "info";
@@ -46,98 +56,129 @@ export interface PersonCard {
 
 export interface TrackView {
   track: string;
-  policy: TrackPolicy | null;
-  current: { holder: PersonCard; mandate: Mandate; expiresAt: string; expiresInMs: number } | null;
+  current: { holder: PersonCard; mandate: MandateV2; expiresAt: string; expiresInMs: number } | null;
   successors: PersonCard[];
-  lastExpired: Mandate | null;
-  recentMandates: Mandate[];
-  rejections: VerifiedTrack["rejections"];
+  /**
+   * v2 has no holder-in-window-vs-after-expiry split. When there is no
+   * live authority, this is the most-recent valid mandate (its window
+   * has elapsed); its `successors` are who may continue the track.
+   * Informational for this read-only view.
+   */
+  lastExpired: MandateV2 | null;
+  recentMandates: MandateV2[];
+  rejections: VerifiedChainV2["rejections"];
 }
 
 export interface OverlayState {
   projectName: string;
+  /** True once at least one track anchored a forward chain. */
   policyPresent: boolean;
   tracks: TrackView[];
   recentEndorsements: ReleaseEndorsement[];
-  endorsementRejections: ReturnType<typeof verifyChainOfEndorsements>["rejections"];
+  endorsementRejections: ReturnType<typeof verifyChainOfEndorsementsV2>["rejections"];
   alarms: Alarm[];
   computedAt: number;
 }
 
 const EXPIRY_SOON_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Forward-verify a track anchored at its first on-repo mandate. An
+ * empty log ⇒ empty-pin ⇒ `rootError:"no-pin"` ⇒ fail-closed.
+ */
+function verifyTrackChain(mandates: MandateV2[]): VerifiedChainV2 {
+  const pin = mandates.length > 0 ? safePinHash(mandates[0]!) : "";
+  return verifyMandateChainFromPin(pin, mandates);
+}
+
+function safePinHash(m: MandateV2): string {
+  try {
+    return mandatePinHash(m);
+  } catch {
+    // An adversarial first mandate that won't canonicalize ⇒ no anchor
+    // ⇒ pin-not-in-log ⇒ fail-closed.
+    return "";
+  }
+}
+
 export function computeOverlayState(input: {
-  policy: RootPolicy | null;
-  trackPolicies: Record<string, TrackPolicy>;
-  mandates: Record<string, Mandate[]>;
+  mandates: Record<string, MandateV2[]>;
   keys: KeyFile[];
   endorsements: ReleaseEndorsement[];
   now: Date;
 }): OverlayState {
-  const { policy, trackPolicies, mandates, keys, endorsements, now } = input;
-  const projectName = policy?.project.name ?? "(unnamed project)";
+  const { mandates, keys, endorsements, now } = input;
   const alarms: Alarm[] = [];
 
-  // Build a pubkey → PersonCard map; unknown pubkeys synthesize a card.
+  // Build a pubkey → KeyFile map; unknown pubkeys synthesize a card.
   const keyByPubkey = new Map<Pubkey, KeyFile>();
   for (const k of keys) keyByPubkey.set(k.pubkey, k);
 
-  const tracks: TrackView[] = [];
-  if (!policy) {
-    return {
-      projectName,
-      policyPresent: false,
-      tracks,
-      recentEndorsements: [],
-      endorsementRejections: [],
-      alarms,
-      computedAt: now.getTime(),
-    };
-  }
+  // v2: project metadata lives inline on a from-scratch (root) mandate;
+  // there is no RootPolicy. Surface the first one we can verify.
+  let projectName = "(unnamed project)";
 
-  for (const trackName of policy.tracks) {
-    const trackPolicy = trackPolicies[trackName];
+  const tracks: TrackView[] = [];
+  const trackNames = Object.keys(mandates).sort();
+
+  for (const trackName of trackNames) {
     const trackMandates = mandates[trackName] ?? [];
-    if (!trackPolicy) {
+    let chain: VerifiedChainV2;
+    try {
+      chain = verifyTrackChain(trackMandates);
+    } catch (err) {
+      alarms.push({
+        level: "red",
+        kind: "chain-gap",
+        track: trackName,
+        message: `Forward verification threw on "${trackName}"`,
+        detail: err instanceof Error ? err.message : String(err),
+      });
       tracks.push({
         track: trackName,
-        policy: null,
         current: null,
         successors: [],
         lastExpired: null,
         recentMandates: [],
         rejections: [],
       });
-      alarms.push({
-        level: "yellow",
-        kind: "chain-gap",
-        track: trackName,
-        message: `Track "${trackName}" declared in root policy.json but its policy.json is missing`,
-      });
       continue;
     }
 
-    let verified: VerifiedTrack;
-    try {
-      verified = verifyTrack(trackName, trackPolicy, trackMandates);
-    } catch (err) {
+    if (chain.root === null) {
+      // L1 fail-closed (no-pin / pin-not-in-log / malformed root).
       alarms.push({
         level: "red",
         kind: "chain-gap",
         track: trackName,
-        message: `verifyTrack threw on "${trackName}"`,
-        detail: err instanceof Error ? err.message : String(err),
+        message: `Track "${trackName}" could not be anchored`,
+        detail: chain.rootError ?? "no forward chain",
       });
-      verified = { track: trackName, mandates: trackMandates, validMandates: [], rejections: [] };
+      tracks.push({
+        track: trackName,
+        current: null,
+        successors: [],
+        lastExpired: null,
+        recentMandates: [],
+        rejections: chain.rejections,
+      });
+      continue;
     }
 
-    const auth = currentAuthority(verified, now);
-    const expired = lastExpiredMandate(verified, now);
+    // Project name from the first root mandate that carries it.
+    if (projectName === "(unnamed project)" && chain.root.project?.name) {
+      projectName = chain.root.project.name;
+    }
 
-    // Detect takeover: most recent valid mandate's predecessor is from a
-    // different holder AND the new mandate was signed by a successor of
-    // that predecessor (not by the predecessor's holder).
-    const takeover = detectTakeover(verified.validMandates, keyByPubkey);
+    const auth = currentAuthorityV2(chain, now);
+    const last: MandateV2 | null =
+      chain.validMandates[chain.validMandates.length - 1] ?? null;
+    const expired = !auth ? last : null;
+
+    // Detect takeover: a valid mandate signed by someone other than the
+    // prior holder (v2 succession is the single mechanism — no
+    // holder-in-window/after-expiry split).
+    const takeover = detectTakeover(chain.validMandates, keyByPubkey);
     if (takeover) {
       alarms.push({
         level: "red",
@@ -163,7 +204,7 @@ export function computeOverlayState(input: {
       }
     }
 
-    for (const rej of verified.rejections) {
+    for (const rej of chain.rejections) {
       alarms.push({
         level: "red",
         kind: "chain-gap",
@@ -175,7 +216,6 @@ export function computeOverlayState(input: {
 
     tracks.push({
       track: trackName,
-      policy: trackPolicy,
       current: auth
         ? {
             holder: personFromKey(auth.holder, keyByPubkey),
@@ -188,8 +228,8 @@ export function computeOverlayState(input: {
         ? auth.successors.map((pk) => personFromKey(pk, keyByPubkey))
         : (expired?.successors.map((pk) => personFromKey(pk, keyByPubkey)) ?? []),
       lastExpired: expired,
-      recentMandates: verified.validMandates.slice(-5).reverse(),
-      rejections: verified.rejections,
+      recentMandates: chain.validMandates.slice(-5).reverse(),
+      rejections: chain.rejections,
     });
   }
 
@@ -214,28 +254,14 @@ export function computeOverlayState(input: {
     }
   }
 
-  // Endorsements chain (release track if it exists)
-  const releaseTrack = tracks.find((t) => t.track === "release");
-  let endorsementRejections: ReturnType<typeof verifyChainOfEndorsements>["rejections"] = [];
+  // Endorsements chain (release track if it has a valid chain).
+  const releaseMandates = mandates["release"] ?? [];
+  let endorsementRejections: ReturnType<typeof verifyChainOfEndorsementsV2>["rejections"] = [];
   let recentEndorsements: ReleaseEndorsement[] = [];
-  if (releaseTrack?.policy && endorsements.length > 0) {
-    const verifiedRelease: VerifiedTrack = {
-      track: releaseTrack.track,
-      mandates: mandates[releaseTrack.track] ?? [],
-      validMandates: (mandates[releaseTrack.track] ?? []).filter((_m) => true),
-      rejections: [],
-    };
-    // Use the actual verifyTrack result (rebuild from the same mandates)
-    if (releaseTrack.policy) {
-      const verifiedAgain = verifyTrack(releaseTrack.track, releaseTrack.policy, mandates[releaseTrack.track] ?? []);
-      verifiedRelease.validMandates = verifiedAgain.validMandates;
-      verifiedRelease.rejections = verifiedAgain.rejections;
-    }
-    const chain = verifyChainOfEndorsements(
-      endorsements,
-      verifiedRelease,
-      releaseTrack.policy.approvalRule,
-    );
+  const policyPresent = tracks.some((t) => t.current !== null || t.lastExpired !== null);
+  if (releaseMandates.length > 0 && endorsements.length > 0) {
+    const releaseChain = verifyTrackChain(releaseMandates);
+    const chain = verifyChainOfEndorsementsV2(endorsements, releaseChain);
     endorsementRejections = chain.rejections;
     recentEndorsements = chain.validEndorsements.slice(-5).reverse();
     for (const rej of chain.rejections) {
@@ -250,7 +276,7 @@ export function computeOverlayState(input: {
 
   return {
     projectName,
-    policyPresent: true,
+    policyPresent,
     tracks,
     recentEndorsements,
     endorsementRejections,
@@ -287,7 +313,7 @@ function personFromKey(pubkey: Pubkey, keyByPubkey: Map<Pubkey, KeyFile>): Perso
  * Returns the synthetic TakeoverAlarm (NOT signed) for UI display.
  */
 function detectTakeover(
-  validMandates: Mandate[],
+  validMandates: MandateV2[],
   keyByPubkey: Map<Pubkey, KeyFile>,
 ): TakeoverAlarm | null {
   for (let i = validMandates.length - 1; i >= 1; i--) {
@@ -329,4 +355,9 @@ export function formatDuration(ms: number): string {
   const mins = Math.floor(seconds / 60);
   if (mins >= 1) return `${mins}m`;
   return `${seconds}s`;
+}
+
+/** Exported for tests: forward-verify a track's v2 mandate log. */
+export function _verifyChainForTest(mandates: MandateV2[]): VerifiedChainV2 {
+  return verifyTrackChain(mandates);
 }

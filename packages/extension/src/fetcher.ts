@@ -3,13 +3,22 @@
  * a 30-second extension-storage cache. Layered on injectable
  * KV-storage and fetch interfaces for testability.
  *
+ * **LOCKED Phase-2 v2 model.** There is NO `policy.json` (root or
+ * per-track): the succession rule is folded INTO each mandate
+ * (`approvalRule` / `successors` / `minSuccessors` /
+ * `maxDurationSeconds`), and project metadata rides the inline
+ * `project` field of a from-scratch (root) mandate. A track is just
+ * `.maintainers/tracks/<track>/mandates/*.json`, each a version-2
+ * Mandate; a v1 Mandate file is treated as malformed and ignored
+ * (never parsed onto the v2 path).
+ *
  * NOTE: Repo providers (github, codeberg, gitea, gitlab) do not expose
- * a uniform "list files in a directory" API on raw content. For
- * mandates and key files we therefore rely on a small index file at
- * `.maintainers/index.json` that the adopting project commits with each
- * change. If that file is missing we fall back to fetching the canonical
- * `policy.json` and the per-track `policy.json` only — the overlay
- * degrades to "no chain history available" rather than crashing.
+ * a uniform "list files in a directory" API on raw content. We
+ * therefore rely on a small index file at `.maintainers/index.json`
+ * that the adopting project commits with each change. Without it the
+ * mandate log can't be enumerated by name (mandate filenames are
+ * content-derived), so the overlay degrades to "no .maintainers/ data
+ * available" rather than crashing.
  *
  * The index file format (versioned for forward-compat):
  *   {
@@ -23,7 +32,11 @@
  * `.maintainers/`. We reject anything else to prevent a malicious index
  * from redirecting us off-tree.
  */
-import type { Mandate, KeyFile, ReleaseEndorsement, RootPolicy, TrackPolicy } from "@maintainers/protocol";
+import type {
+  KeyFile,
+  MandateV2,
+  ReleaseEndorsement,
+} from "@maintainers/protocol";
 import type { RepoLocation } from "./repo-detect.js";
 
 export interface KVStore {
@@ -38,12 +51,11 @@ export interface FetcherDeps {
 }
 
 export interface MaintainersData {
-  policy: RootPolicy | null;
-  trackPolicies: Record<string, TrackPolicy>;
-  mandates: Record<string, Mandate[]>;
+  /** v2 mandates per track, version-2-filtered, sorted by issuedAt ascending. */
+  mandates: Record<string, MandateV2[]>;
   keys: KeyFile[];
   endorsements: ReleaseEndorsement[];
-  /** Branch we successfully fetched policy.json from. */
+  /** Branch we successfully fetched index.json from. */
   branch: string | null;
   /** Errors encountered per path (for diagnostics). */
   errors: { path: string; error: string }[];
@@ -106,31 +118,30 @@ export async function fetchFresh(
 ): Promise<MaintainersData> {
   const errors: MaintainersData["errors"] = [];
 
-  // Try each branch in order; the first one that has policy.json wins.
-  let policy: RootPolicy | null = null;
+  // v2 has no policy.json. The index is the only enumerable anchor; the
+  // first branch that has one wins.
+  let index: MaintainersIndexFile | null = null;
   let usedBranch: string | null = null;
   for (const branch of repo.branches) {
-    const result = await fetchJson<RootPolicy>(
-      repo.rawUrl(".maintainers/policy.json", branch),
+    const result = await fetchJson<MaintainersIndexFile>(
+      repo.rawUrl(".maintainers/index.json", branch),
       deps,
     );
     if (result.ok) {
-      policy = result.value;
+      index = sanitizeIndex(result.value, errors);
       usedBranch = branch;
       break;
     }
   }
-  if (!policy || !usedBranch) {
+  if (!index || !usedBranch) {
     return {
-      policy: null,
-      trackPolicies: {},
       mandates: {},
       keys: [],
       endorsements: [],
       branch: null,
       errors: [
         {
-          path: ".maintainers/policy.json",
+          path: ".maintainers/index.json",
           error: "not found on any candidate branch",
         },
       ],
@@ -138,52 +149,51 @@ export async function fetchFresh(
     };
   }
 
-  // Try to load the index. Soft-fallback if missing.
-  const indexResult = await fetchJson<MaintainersIndexFile>(
-    repo.rawUrl(".maintainers/index.json", usedBranch),
-    deps,
-  );
-  const index = indexResult.ok ? sanitizeIndex(indexResult.value, errors) : null;
-
-  // Per-track policy + mandates
-  const trackPolicies: Record<string, TrackPolicy> = {};
-  const mandates: Record<string, Mandate[]> = {};
-  for (const track of policy.tracks) {
-    const tp = await fetchJson<TrackPolicy>(
-      repo.rawUrl(`.maintainers/tracks/${track}/policy.json`, usedBranch),
-      deps,
-    );
-    if (tp.ok) trackPolicies[track] = tp.value;
-    else errors.push({ path: `.maintainers/tracks/${track}/policy.json`, error: tp.error });
-
-    const mandatePaths = index?.tracks[track] ?? [];
-    const trackMandates: Mandate[] = [];
+  // Mandates per track. v2-only: a Mandate file MUST be a well-formed
+  // version-2 Mandate; a v1 Mandate (or any other shape) is recorded as
+  // an error and dropped — it never reaches the v2 verifier.
+  const mandates: Record<string, MandateV2[]> = {};
+  for (const [track, mandatePaths] of Object.entries(index.tracks)) {
+    const trackMandates: MandateV2[] = [];
     for (const p of mandatePaths) {
-      const r = await fetchJson<Mandate>(repo.rawUrl(p, usedBranch), deps);
-      if (r.ok) trackMandates.push(r.value);
-      else errors.push({ path: p, error: r.error });
+      const r = await fetchJson<unknown>(repo.rawUrl(p, usedBranch), deps);
+      if (!r.ok) {
+        errors.push({ path: p, error: r.error });
+        continue;
+      }
+      const v = r.value as { kind?: unknown; version?: unknown };
+      if (v && typeof v === "object" && v.kind === "Mandate" && v.version === 2) {
+        trackMandates.push(r.value as MandateV2);
+      } else {
+        errors.push({ path: p, error: "not a version-2 Mandate" });
+      }
     }
-    mandates[track] = trackMandates;
+    // Canonical log order: issuedAt ascending. issuedAt is in the
+    // signed canonical bytes — an attacker can't backdate without
+    // breaking signatures or the forward verifier's
+    // `issued-before-predecessor` check.
+    mandates[track] = trackMandates.sort(
+      (a, b) => Date.parse(a.issuedAt) - Date.parse(b.issuedAt),
+    );
   }
 
-  // Keys + endorsements
+  // Keys + endorsements (still v1 envelopes — only the Mandate/policy
+  // path moved to v2; KeyFile/ReleaseEndorsement are unchanged).
   const keys: KeyFile[] = [];
-  for (const p of index?.keys ?? []) {
+  for (const p of index.keys) {
     const r = await fetchJson<KeyFile>(repo.rawUrl(p, usedBranch), deps);
     if (r.ok && r.value.kind === "KeyFile") keys.push(r.value);
     else if (!r.ok) errors.push({ path: p, error: r.error });
   }
 
   const endorsements: ReleaseEndorsement[] = [];
-  for (const p of index?.endorsements ?? []) {
+  for (const p of index.endorsements) {
     const r = await fetchJson<ReleaseEndorsement>(repo.rawUrl(p, usedBranch), deps);
     if (r.ok) endorsements.push(r.value);
     else errors.push({ path: p, error: r.error });
   }
 
   return {
-    policy,
-    trackPolicies,
     mandates,
     keys,
     endorsements,

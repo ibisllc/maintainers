@@ -1,20 +1,28 @@
 /**
- * Programmatically build a `.maintainers/` fixture tree, returning a
- * URL → text map that mock-fetch can read from. We sign every envelope
- * with deterministic keypairs so tests are reproducible.
+ * Programmatically build a `.maintainers/` fixture tree (LOCKED
+ * Phase-2 v2 model), returning a URL → text map that mock-fetch can
+ * read from. We sign every envelope with deterministic keypairs so
+ * tests are reproducible.
+ *
+ * v2: there is NO policy.json (root or per-track). The succession rule
+ * is inline in each MandateV2; project metadata rides the inline
+ * `project` field of the from-scratch (root) mandate. A track is just
+ * `.maintainers/tracks/<track>/mandates/*.json`, enumerated via
+ * `.maintainers/index.json`. Mirrors the c4.5b web-ui `mkV2` helper.
  */
 import {
   generateKeypair,
-  signMandate,
-  signKeyFile,
   intermediateMerkleRoot,
+  mandatePinHash,
+  signKeyFile,
+  signMandateV2,
   signReleaseEndorsement,
   type KeyFile,
-  type Mandate,
+  type MandateV2,
   type ReleaseEndorsement,
-  type RootPolicy,
-  type TrackPolicy,
 } from "@maintainers/protocol";
+
+const DAY = 86_400_000;
 
 export interface Fixture {
   rawBase: (path: string) => string;
@@ -22,18 +30,17 @@ export interface Fixture {
   alice: { privKey: string; pubKey: string };
   bob: { privKey: string; pubKey: string };
   carol: { privKey: string; pubKey: string };
-  policy: RootPolicy;
-  releasePolicy: TrackPolicy;
-  caPolicy: TrackPolicy;
-  mandates: { release: Mandate[]; ca: Mandate[] };
+  /** First (root) release mandate's pin — the preview anchor. */
+  releaseRootPin: string;
+  mandates: { release: MandateV2[]; ca: MandateV2[] };
   keys: KeyFile[];
   endorsements: ReleaseEndorsement[];
 }
 
 export interface FixtureOptions {
   /**
-   * Inject a takeover by Bob after Alice's release-track mandate expires.
-   * If false, Alice renews continuously.
+   * Inject a takeover by Bob after Alice's release-track mandate
+   * expires. If false, Alice rotates to herself (continuous).
    */
   takeover?: boolean;
   /**
@@ -54,28 +61,47 @@ function kp(seedByte: number) {
   return generateKeypair(seed);
 }
 
+export interface MkV2 {
+  id: string;
+  track?: string;
+  holder: string;
+  issuedAt: string;
+  expiresAt: string;
+  successors: string[];
+  threshold?: number;
+  minSuccessors?: number;
+  maxDurationSeconds?: number;
+  project?: { name: string; homepage?: string; tracks?: string[] };
+  signedBy: string;
+  signWith: string[];
+}
+
+export function mkV2(o: MkV2): MandateV2 {
+  const unsigned: Omit<MandateV2, "signatures"> = {
+    kind: "Mandate",
+    version: 2,
+    mandateId: o.id,
+    track: o.track ?? "release",
+    holder: o.holder,
+    issuedAt: o.issuedAt,
+    expiresAt: o.expiresAt,
+    successors: o.successors,
+    approvalRule: { kind: "threshold", threshold: o.threshold ?? 1 },
+    minSuccessors: o.minSuccessors ?? 0,
+    maxDurationSeconds: o.maxDurationSeconds ?? 1000 * 86_400,
+    defaultDurationSeconds: 60 * 86_400,
+    ...(o.project ? { project: o.project } : {}),
+    signedBy: o.signedBy,
+  };
+  return signMandateV2(unsigned, o.signWith.map((privKey) => ({ privKey })));
+}
+
 export function buildFixture(opts: FixtureOptions): Fixture {
   const alice = kp(11);
   const bob = kp(22);
   const carol = kp(33);
 
   const now = opts.now;
-  const policy: RootPolicy = {
-    schemaVersion: 1,
-    project: { name: "fixture-project", homepage: "https://example.com" },
-    tracks: ["release", "ca"],
-  };
-  const releasePolicy: TrackPolicy = {
-    track: "release",
-    description: "Signs release endorsements",
-    defaultMandateDuration: "60d",
-    approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-  };
-  const caPolicy: TrackPolicy = {
-    track: "ca",
-    defaultMandateDuration: "60d",
-    approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
-  };
 
   // KeyFiles
   const aliceKey = signKeyFile(
@@ -86,7 +112,7 @@ export function buildFixture(opts: FixtureOptions): Fixture {
       displayName: "Alice",
       currentEmail: "alice@example.com",
       emailHistory: [
-        { email: "alice@example.com", from: new Date(now.getTime() - 90 * 86400000).toISOString(), to: null },
+        { email: "alice@example.com", from: new Date(now.getTime() - 90 * DAY).toISOString(), to: null },
       ],
       metadata: { photo: null, github: "alice", role: "release engineer" },
       introductionMandate: "00000000-0000-0000-0000-000000000000",
@@ -102,8 +128,8 @@ export function buildFixture(opts: FixtureOptions): Fixture {
       displayName: "Bob",
       currentEmail: "bob-new@example.com",
       emailHistory: [
-        { email: "bob-old@example.com", from: new Date(now.getTime() - 365 * 86400000).toISOString(), to: new Date(now.getTime() - 5 * 86400000).toISOString() },
-        { email: "bob-new@example.com", from: opts.recentEmailRotation ? new Date(now.getTime() - 2 * 86400000).toISOString() : new Date(now.getTime() - 60 * 86400000).toISOString(), to: null },
+        { email: "bob-old@example.com", from: new Date(now.getTime() - 365 * DAY).toISOString(), to: new Date(now.getTime() - 5 * DAY).toISOString() },
+        { email: "bob-new@example.com", from: opts.recentEmailRotation ? new Date(now.getTime() - 2 * DAY).toISOString() : new Date(now.getTime() - 60 * DAY).toISOString(), to: null },
       ],
       metadata: { photo: null, github: "bob", role: "successor" },
       introductionMandate: "00000000-0000-0000-0000-000000000001",
@@ -121,7 +147,7 @@ export function buildFixture(opts: FixtureOptions): Fixture {
         displayName: "Bob",
         currentEmail: "bob@example.com",
         emailHistory: [
-          { email: "bob@example.com", from: new Date(now.getTime() - 365 * 86400000).toISOString(), to: null },
+          { email: "bob@example.com", from: new Date(now.getTime() - 365 * DAY).toISOString(), to: null },
         ],
         metadata: { photo: null, github: "bob", role: "successor" },
         introductionMandate: "00000000-0000-0000-0000-000000000001",
@@ -138,7 +164,7 @@ export function buildFixture(opts: FixtureOptions): Fixture {
       displayName: "Carol",
       currentEmail: "carol@example.com",
       emailHistory: [
-        { email: "carol@example.com", from: new Date(now.getTime() - 200 * 86400000).toISOString(), to: null },
+        { email: "carol@example.com", from: new Date(now.getTime() - 200 * DAY).toISOString(), to: null },
       ],
       metadata: { photo: null, github: "carol", role: "second successor" },
       introductionMandate: "00000000-0000-0000-0000-000000000002",
@@ -147,90 +173,71 @@ export function buildFixture(opts: FixtureOptions): Fixture {
     carol.privKey,
   );
 
-  // Release mandates
-  const releaseMandates: Mandate[] = [];
-  const genesisIssuedAt = new Date(now.getTime() - 90 * 86400000).toISOString();
-  const genesisExpiresAt = new Date(now.getTime() - 30 * 86400000).toISOString();
-  releaseMandates.push(
-    signMandate(
-      {
-        kind: "Mandate",
-        version: 1,
-        mandateId: "11111111-1111-1111-1111-111111111111",
-        track: "release",
-        holder: alice.pubKey,
-        issuedAt: genesisIssuedAt,
-        expiresAt: genesisExpiresAt,
-        successors: [bob.pubKey, carol.pubKey],
-        signedBy: alice.pubKey,
-      },
-      [{ privKey: alice.privKey }],
-    ),
-  );
+  // Release mandates. The root (genesis) is self-signed by Alice and
+  // carries the project metadata + the succession rule for K+1.
+  const releaseMandates: MandateV2[] = [];
+  const genesisIssuedAt = new Date(now.getTime() - 90 * DAY).toISOString();
+  const genesisExpiresAt = new Date(now.getTime() - 30 * DAY).toISOString();
+  const releaseRoot = mkV2({
+    id: "11111111-1111-1111-1111-111111111111",
+    track: "release",
+    holder: alice.pubKey,
+    issuedAt: genesisIssuedAt,
+    expiresAt: genesisExpiresAt,
+    successors: [alice.pubKey, bob.pubKey, carol.pubKey],
+    project: { name: "fixture-project", homepage: "https://example.com", tracks: ["release", "ca"] },
+    signedBy: alice.pubKey,
+    signWith: [alice.privKey],
+  });
+  releaseMandates.push(releaseRoot);
 
+  const expiresInDays = opts.expiresInDays ?? 30;
   if (opts.takeover) {
-    // Bob takes over after Alice's mandate expired
-    const takeoverIssuedAt = new Date(now.getTime() - 29 * 86400000).toISOString();
-    const expiresInDays = opts.expiresInDays ?? 30;
-    const takeoverExpiresAt = new Date(now.getTime() + expiresInDays * 86400000).toISOString();
+    // Bob succeeds Alice (signedBy != prior holder ⇒ takeover alarm).
     releaseMandates.push(
-      signMandate(
-        {
-          kind: "Mandate",
-          version: 1,
-          mandateId: "22222222-2222-2222-2222-222222222222",
-          track: "release",
-          holder: bob.pubKey,
-          issuedAt: takeoverIssuedAt,
-          expiresAt: takeoverExpiresAt,
-          successors: [bob.pubKey, carol.pubKey],
-          signedBy: bob.pubKey,
-        },
-        [{ privKey: bob.privKey }],
-      ),
+      mkV2({
+        id: "22222222-2222-2222-2222-222222222222",
+        track: "release",
+        holder: bob.pubKey,
+        issuedAt: new Date(now.getTime() - 29 * DAY).toISOString(),
+        expiresAt: new Date(now.getTime() + expiresInDays * DAY).toISOString(),
+        successors: [bob.pubKey, carol.pubKey],
+        signedBy: bob.pubKey,
+        signWith: [bob.privKey],
+      }),
     );
   } else {
-    // Alice renews
-    const renewIssuedAt = new Date(now.getTime() - 31 * 86400000).toISOString();
-    const expiresInDays = opts.expiresInDays ?? 30;
-    const renewExpiresAt = new Date(now.getTime() + expiresInDays * 86400000).toISOString();
+    // Alice rotates to herself (continuous; no takeover).
     releaseMandates.push(
-      signMandate(
-        {
-          kind: "Mandate",
-          version: 1,
-          mandateId: "22222222-2222-2222-2222-222222222222",
-          track: "release",
-          holder: alice.pubKey,
-          issuedAt: renewIssuedAt,
-          expiresAt: renewExpiresAt,
-          successors: [bob.pubKey, carol.pubKey],
-          signedBy: alice.pubKey,
-        },
-        [{ privKey: alice.privKey }],
-      ),
+      mkV2({
+        id: "22222222-2222-2222-2222-222222222222",
+        track: "release",
+        holder: alice.pubKey,
+        issuedAt: new Date(now.getTime() - 31 * DAY).toISOString(),
+        expiresAt: new Date(now.getTime() + expiresInDays * DAY).toISOString(),
+        successors: [alice.pubKey, bob.pubKey, carol.pubKey],
+        signedBy: alice.pubKey,
+        signWith: [alice.privKey],
+      }),
     );
   }
 
-  // CA mandates — just Alice all the way through (active)
-  const caMandates: Mandate[] = [
-    signMandate(
-      {
-        kind: "Mandate",
-        version: 1,
-        mandateId: "33333333-3333-3333-3333-333333333333",
-        track: "ca",
-        holder: alice.pubKey,
-        issuedAt: new Date(now.getTime() - 60 * 86400000).toISOString(),
-        expiresAt: new Date(now.getTime() + 60 * 86400000).toISOString(),
-        successors: [bob.pubKey],
-        signedBy: alice.pubKey,
-      },
-      [{ privKey: alice.privKey }],
-    ),
+  // CA mandates — just Alice (active root, currently in-window).
+  const caMandates: MandateV2[] = [
+    mkV2({
+      id: "33333333-3333-3333-3333-333333333333",
+      track: "ca",
+      holder: alice.pubKey,
+      issuedAt: new Date(now.getTime() - 60 * DAY).toISOString(),
+      expiresAt: new Date(now.getTime() + 60 * DAY).toISOString(),
+      successors: [alice.pubKey, bob.pubKey],
+      signedBy: alice.pubKey,
+      signWith: [alice.privKey],
+    }),
   ];
 
   // A release endorsement signed by the current release-track holder
+  // (v2 holder-signs).
   const intermediate = ["a".repeat(40), "b".repeat(40)];
   const root = intermediateMerkleRoot(intermediate);
   const currentReleaseHolderPriv = opts.takeover ? bob.privKey : alice.privKey;
@@ -247,15 +254,15 @@ export function buildFixture(opts: FixtureOptions): Fixture {
       intermediateCommits: intermediate,
       intermediateMerkleRoot: root,
       endorsedNotes: "first release",
-      issuedAt: new Date(now.getTime() - 1 * 86400000).toISOString(),
+      issuedAt: new Date(now.getTime() - 1 * DAY).toISOString(),
       signedBy: currentReleaseHolderPub,
     },
     [{ privKey: currentReleaseHolderPriv }],
   );
 
-  // Build the index file
+  // Build the index file (v2: no policy.json anywhere).
   const releasePath0 = ".maintainers/tracks/release/mandates/0001-genesis.json";
-  const releasePath1 = ".maintainers/tracks/release/mandates/0002-renew.json";
+  const releasePath1 = ".maintainers/tracks/release/mandates/0002-rotate.json";
   const caPath0 = ".maintainers/tracks/ca/mandates/0001-genesis.json";
   const aliceKeyPath = ".maintainers/keys/alice@example.com.json";
   const bobKeyPath = ".maintainers/keys/bob@example.com.json";
@@ -272,14 +279,9 @@ export function buildFixture(opts: FixtureOptions): Fixture {
     endorsements: [endorsementPath],
   };
 
-  // The "raw base URL" is a deterministic prefix; tests can re-use it
-  // to make assertions about what got fetched.
   const RAW_BASE = "https://raw.example.test/owner/repo/main/";
   const files = new Map<string, string>();
-  files.set(RAW_BASE + ".maintainers/policy.json", JSON.stringify(policy));
   files.set(RAW_BASE + ".maintainers/index.json", JSON.stringify(index));
-  files.set(RAW_BASE + ".maintainers/tracks/release/policy.json", JSON.stringify(releasePolicy));
-  files.set(RAW_BASE + ".maintainers/tracks/ca/policy.json", JSON.stringify(caPolicy));
   files.set(RAW_BASE + releasePath0, JSON.stringify(releaseMandates[0]));
   files.set(RAW_BASE + releasePath1, JSON.stringify(releaseMandates[1]));
   files.set(RAW_BASE + caPath0, JSON.stringify(caMandates[0]));
@@ -294,9 +296,7 @@ export function buildFixture(opts: FixtureOptions): Fixture {
     alice,
     bob,
     carol,
-    policy,
-    releasePolicy,
-    caPolicy,
+    releaseRootPin: mandatePinHash(releaseRoot),
     mandates: { release: releaseMandates, ca: caMandates },
     keys: [aliceKey, bobKey, carolKey],
     endorsements: [endorsement],
