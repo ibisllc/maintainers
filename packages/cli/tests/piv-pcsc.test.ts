@@ -27,7 +27,18 @@ const OK = [0x90, 0x00];
 const SIG = new Array(64).fill(0xab);
 const PUB = new Array(32).fill(0xcd);
 const gaResp = [...tlv(0x7c, tlv(0x82, SIG)), ...OK];
-const pkResp = [...tlv([0x7f, 0x49], tlv(0x86, PUB)), ...OK];
+// GENERATE (INS 0x47) emits the 7F49 public-key template.
+const genResp = [...tlv([0x7f, 0x49], tlv(0x86, PUB)), ...OK];
+// GET METADATA (INS 0xF7) emits a FLAT top-level TLV sequence — the
+// public key is under top-level 0x04 → inner 0x86 (NO 7F49). Shape
+// captured from a real YubiKey 5.7.4 Ed25519 slot 9c.
+const metaResp = [
+  ...tlv(0x01, [0xe0]), // Algorithm: Ed25519
+  ...tlv(0x02, [0x02, 0x02]), // Policy (pin/touch)
+  ...tlv(0x03, [0x01]), // Origin (generated)
+  ...tlv(0x04, tlv(0x86, PUB)), // Public: 04 → 86 → 32B
+  ...OK,
+];
 
 /** Scripted channel keyed by INS; records the INS order. */
 function chan(
@@ -46,10 +57,10 @@ function chan(
 }
 
 describe("pcscPivTransport", () => {
-  it("getPublicKey: SELECT then GET METADATA → 64-hex pubkey", async () => {
+  it("getPublicKey: SELECT then GET METADATA (flat 04→86) → 64-hex pubkey", async () => {
     const order: number[] = [];
     const t = pcscPivTransport(
-      chan({ 0xa4: OK, 0xf7: pkResp }, order),
+      chan({ 0xa4: OK, 0xf7: metaResp }, order),
     );
     expect(await t.getPublicKey("9c")).toBe("cd".repeat(32));
     expect(order).toEqual([0xa4, 0xf7]); // SELECT before the read
@@ -65,8 +76,8 @@ describe("pcscPivTransport", () => {
     expect(order).toEqual([0xa4, 0x20, 0x87]); // VERIFY strictly before sign
   });
 
-  it("generateEd25519: SELECT → GENERATE → 64-hex pubkey", async () => {
-    const t = pcscPivTransport(chan({ 0xa4: OK, 0x47: pkResp }));
+  it("generateEd25519: SELECT → GENERATE (7F49 template) → 64-hex pubkey", async () => {
+    const t = pcscPivTransport(chan({ 0xa4: OK, 0x47: genResp }));
     expect(await t.generateEd25519("9a", { touch: "always", pin: "once" })).toBe(
       "cd".repeat(32),
     );
@@ -117,9 +128,19 @@ describe("pcscPivTransport", () => {
 
 describe("connectPcscChannel — fail-closed, no silent fallback", () => {
   it("throws a precise PcscBuildError (NOT recoverable) when the binding is absent", async () => {
+    // HERMETIC INVARIANT: the build-not-wired path must be exercised via
+    // an INJECTED import failure, NOT by relying on `pcsclite` being
+    // physically absent. `pcsclite` is now installed locally for the
+    // ceremony build, so calling connectPcscChannel() with the default
+    // (real) importer here would attempt to talk to real hardware /
+    // hang. We inject an importer that rejects exactly as a missing
+    // optional binding would — the assertion below is UNCHANGED.
+    const failingImport = async (): Promise<unknown> => {
+      throw new Error("Cannot find module 'pcsclite'");
+    };
     let err: unknown;
     try {
-      await connectPcscChannel();
+      await connectPcscChannel(failingImport);
     } catch (e) {
       err = e;
     }
