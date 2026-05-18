@@ -281,8 +281,12 @@ export function extractEd25519Signature(responseData: Uint8Array): string {
 }
 
 /**
- * Extract the 32-byte Ed25519 public key (→64-hex) from a GENERATE (or
- * the equivalent metadata) response: `7F49 { 86 <pubkey> }`.
+ * Extract the 32-byte Ed25519 public key (→64-hex) from a GENERATE
+ * asymmetric-key response: `7F49 { 86 <pubkey> }` (NIST SP 800-73-4 §3.3.2
+ * / Yubico PIV Ed25519). Fail-closed on any other shape — never returns a
+ * guessed/short key. This is the GENERATE wire shape ONLY; a Yubico GET
+ * METADATA response is a DIFFERENT, flat TLV sequence — use
+ * {@link extractMetadataPublicKey} for that (the no-PIN public read path).
  */
 export function extractEd25519PublicKey(responseData: Uint8Array): string {
   const inner = findTlvValue(responseData, 0x7f49);
@@ -292,6 +296,49 @@ export function extractEd25519PublicKey(responseData: Uint8Array): string {
   if (pt.length !== 32) {
     throw new CliError(
       `GENERATE: Ed25519 public key is ${pt.length} bytes, expected 32`,
+    );
+  }
+  return toHex(pt);
+}
+
+/**
+ * Extract the 32-byte Ed25519 public key (→64-hex) from a Yubico PIV
+ * **GET METADATA** response (INS 0xF7 — the no-PIN public read).
+ *
+ * A real GET METADATA response is a FLAT sequence of top-level TLVs (NOT
+ * the `7F49` GENERATE template). Captured byte-for-byte from a YubiKey
+ * 5.7.4 Ed25519 slot 9c:
+ *
+ *   01 01 E0            Algorithm   (E0 = Ed25519)
+ *   02 02 <pin> <touch> Policy
+ *   03 01 <origin>      Origin
+ *   04 22 86 20 <32B>   Public      (top-level 04 → inner 86 → 32-byte key)
+ *
+ * Fail-closed (root-of-trust path): the Algorithm tag, when present, must
+ * be Ed25519 (0xE0) — a non-Ed25519 slot is rejected, never coerced; the
+ * Public TLV (top-level `0x04`) and its inner `0x86` must be present and
+ * exactly 32 bytes. Anything off throws — a wrong/short/absent key on the
+ * signer-binding path MUST never be returned as a guess.
+ */
+export function extractMetadataPublicKey(responseData: Uint8Array): string {
+  // Algorithm sanity (cheap, fail-closed): tag 0x01 carries the algorithm
+  // id; if present it MUST be Ed25519 (0xE0). A different/short value
+  // means this is not the Ed25519 signer slot we will bind — reject.
+  const alg = findTlvValue(responseData, 0x01);
+  if (alg && !(alg.length === 1 && alg[0] === ALG_ED25519)) {
+    throw new CliError(
+      `GET METADATA: slot algorithm is not Ed25519 (got 0x${
+        alg.length === 1 ? alg[0]!.toString(16) : toHex(alg)
+      }, expected 0xe0)`,
+    );
+  }
+  const pub = findTlvValue(responseData, 0x04);
+  if (!pub) throw new CliError("GET METADATA: missing 04 public-key TLV");
+  const pt = findTlvValue(pub, 0x86);
+  if (!pt) throw new CliError("GET METADATA: missing 86 public-point value");
+  if (pt.length !== 32) {
+    throw new CliError(
+      `GET METADATA: Ed25519 public key is ${pt.length} bytes, expected 32`,
     );
   }
   return toHex(pt);

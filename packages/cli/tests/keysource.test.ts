@@ -1,4 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// HERMETIC INVARIANT (gate-B): `pcsclite` is now physically installed
+// locally for the ceremony build, so the *default* real transport path
+// (loadSigner / realPivTransport with no injected fake) would otherwise
+// attempt to enumerate a real reader during the hermetic suite. We mock
+// the OPTIONAL binding to fail to resolve — exactly as a missing
+// optional binding does in a non-ceremony build — so the
+// "fail-closes / no silent hex fallback" assertion below is exercised
+// deterministically WITHOUT touching real hardware and WITHOUT
+// weakening it. `connectPcscChannel`'s real hardware path stays
+// reachable only when explicitly invoked against hardware.
+vi.mock("pcsclite", () => {
+  throw new Error("Cannot find module 'pcsclite' (hermetic-suite mock)");
+});
+
 import {
   generateKeypair,
   sign,

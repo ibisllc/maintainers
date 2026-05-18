@@ -19,6 +19,7 @@ import {
   findTlvValue,
   extractEd25519Signature,
   extractEd25519PublicKey,
+  extractMetadataPublicKey,
   toHex,
 } from "../src/lib/piv-apdu.js";
 import { CliError } from "../src/lib/args.js";
@@ -113,11 +114,56 @@ describe("response parsing", () => {
     );
   });
 
-  it("extracts an Ed25519 pubkey from 7F49{86<32>} (2-byte tag)", () => {
+  it("extracts an Ed25519 pubkey from a GENERATE 7F49{86<32>} (2-byte tag)", () => {
     const pk = new Uint8Array(32).fill(0xcd);
     const resp = new Uint8Array([0x7f, 0x49, 0x22, 0x86, 0x20, ...pk]);
     expect(extractEd25519PublicKey(resp)).toBe("cd".repeat(32));
     const bad = new Uint8Array([0x7f, 0x49, 0x03, 0x86, 0x01, 0x00]);
     expect(() => extractEd25519PublicKey(bad)).toThrow(/expected 32/);
+  });
+
+  // GET METADATA (INS 0xF7, no-PIN public read) is a FLAT top-level TLV
+  // sequence — NOT the 7F49 GENERATE template. These bytes were captured
+  // BYTE-FOR-BYTE from a real YubiKey 5.7.4 Ed25519 slot 9c (the
+  // root-of-trust signer-pubkey path the genesis ceremony depends on).
+  // Regression lock for the Gate-B hardware-surfaced parse bug.
+  const REAL_METADATA_9C_HEX =
+    "0101e002020202030101042286202137e739f00550b0e6a33a75366ebaf16f66f3492f733d0a8010ba91ab5e71d7";
+  const REAL_PUB_9C_HEX =
+    "2137e739f00550b0e6a33a75366ebaf16f66f3492f733d0a8010ba91ab5e71d7";
+  const fromHex = (s: string): Uint8Array =>
+    new Uint8Array(s.match(/../g)!.map((x) => parseInt(x, 16)));
+
+  it("extracts the pubkey from a REAL YubiKey GET METADATA (flat 04→86)", () => {
+    expect(extractMetadataPublicKey(fromHex(REAL_METADATA_9C_HEX))).toBe(
+      REAL_PUB_9C_HEX,
+    );
+  });
+
+  it("GET METADATA parser is fail-closed (no silent/garbled return)", () => {
+    // Missing the top-level 0x04 Public TLV → throw, never guess.
+    expect(() =>
+      extractMetadataPublicKey(fromHex("0101e0020202020301 01".replace(/ /g, ""))),
+    ).toThrow(/missing 04 public-key TLV/);
+    // 0x04 present and well-formed but carries no inner 0x86.
+    expect(() =>
+      extractMetadataPublicKey(fromHex("0101e0040301 01ff".replace(/ /g, ""))),
+    ).toThrow(/missing 86 public-point/);
+    // Inner 0x86 present but wrong length (31 bytes, not 32).
+    const short = new Uint8Array([
+      0x01, 0x01, 0xe0, 0x04, 0x21, 0x86, 0x1f, ...new Uint8Array(31).fill(0xaa),
+    ]);
+    expect(() => extractMetadataPublicKey(short)).toThrow(/expected 32/);
+    // Non-Ed25519 algorithm (e.g. 0x11 = ECCP256) → reject, never coerce.
+    const wrongAlg = new Uint8Array([
+      0x01, 0x01, 0x11, 0x04, 0x22, 0x86, 0x20, ...new Uint8Array(32).fill(0xbb),
+    ]);
+    expect(() => extractMetadataPublicKey(wrongAlg)).toThrow(/not Ed25519/);
+    // The GENERATE 7F49 shape is NOT a valid GET METADATA response.
+    expect(() =>
+      extractMetadataPublicKey(
+        new Uint8Array([0x7f, 0x49, 0x22, 0x86, 0x20, ...new Uint8Array(32)]),
+      ),
+    ).toThrow(/missing 04 public-key TLV/);
   });
 });

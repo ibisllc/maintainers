@@ -92,12 +92,83 @@ import {
   statusWordReason,
   extractEd25519Signature,
   extractEd25519PublicKey,
+  extractMetadataPublicKey,
 } from "./piv-apdu.js";
 
 /** The raw transport: send a command APDU, get the response APDU
  *  (data ‖ SW1 SW2). No PIV awareness — just bytes in / bytes out. */
 export interface PcscChannel {
   transmit(commandApdu: Uint8Array): Promise<Uint8Array>;
+}
+
+// ---- Minimal structural typing for the OPTIONAL `pcsclite` binding -----
+//
+// `pcsclite` is NOT a declared dependency (no package.json/lockfile entry
+// — it is brought in transiently for the ceremony build), so its types
+// are not in scope at compile time. We narrow only the slice of its
+// EventEmitter surface this binding drives (per the GATE-(A) plan
+// doc-comment below). Everything is treated as untrusted/late-bound.
+
+interface PcscReaderLike {
+  name: string;
+  state: number;
+  readonly SCARD_STATE_PRESENT: number;
+  readonly SCARD_STATE_EMPTY: number;
+  readonly SCARD_SHARE_SHARED: number;
+  on(event: "error", cb: (err: unknown) => void): void;
+  on(event: "end", cb: () => void): void;
+  on(event: "status", cb: (status: { state: number }) => void): void;
+  connect(
+    options: { share_mode: number },
+    cb: (err: unknown, protocol: number) => void,
+  ): void;
+  disconnect(cb: (err: unknown) => void): void;
+  transmit(
+    data: Uint8Array,
+    resLen: number,
+    protocol: number,
+    cb: (err: unknown, response: Uint8Array) => void,
+  ): void;
+  close(): void;
+}
+
+interface PcscLiteLike {
+  on(event: "error", cb: (err: unknown) => void): void;
+  on(event: "reader", cb: (reader: PcscReaderLike) => void): void;
+  close(): void;
+}
+
+/**
+ * Load the optional native binding. Injectable ONLY so the hermetic unit
+ * suite can deterministically exercise the build-not-wired path (a forced
+ * import failure) WITHOUT depending on whether `pcsclite` is physically
+ * installed in the test environment — the gate must stay
+ * hardware-independent and CI-safe. Production callers never pass this:
+ * the default performs the real, indirect dynamic `import("pcsclite")`.
+ */
+export type PcscliteImporter = () => Promise<unknown>;
+
+const realPcscliteImporter: PcscliteImporter = async () => {
+  // Indirect specifier so bundlers/tsc don't hard-require the optional
+  // module; absence is an expected, fail-closed BUILD condition.
+  const moduleName = "pcsclite";
+  return import(/* @vite-ignore */ moduleName);
+};
+
+/** A PC/SC error whose `.message` mentions a card/reader absence we treat
+ *  as the recoverable not-ready state (the connect loop owns the retry). */
+function looksLikeAbsentHardware(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : err && typeof err === "object" && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "";
+  return /no.?smart.?card|removed.?card|SCARD_E_NO_SMARTCARD|SCARD_W_REMOVED_CARD|SCARD_E_NO_READERS|SCARD_E_READER_UNAVAILABLE|SCARD_E_NOT_READY|empty|not present|no reader/i.test(
+    msg,
+  );
 }
 
 function slotByte(slot: string): number {
@@ -151,15 +222,19 @@ export function pcscPivTransport(channel: PcscChannel): PivTransport {
   return {
     async getPublicKey(slot: string): Promise<string> {
       await selectPiv(channel);
-      // Public read: ask the card for slot metadata's public key
-      // (Yubico GET METADATA, INS 0xF7) — no PIN. The response carries
-      // the same 7F49/86 public-key TLV GENERATE returns.
+      // Public read: ask the card for slot metadata (Yubico GET
+      // METADATA, INS 0xF7) — no PIN, no touch. The response is a FLAT
+      // top-level TLV sequence; the public key is under top-level tag
+      // 0x04 → inner 0x86 (32 bytes for Ed25519). This is NOT the 7F49
+      // GENERATE template — it has no 7F49 at all — so it MUST be parsed
+      // with the dedicated metadata parser (verified byte-for-byte
+      // against a real YubiKey 5.7.4 Ed25519 slot 9c).
       const data = await send(
         channel,
         commandApdu(0x00, 0xf7, 0x00, slotByte(slot), [], "max"),
         "read PIV public key",
       );
-      return extractEd25519PublicKey(data);
+      return extractMetadataPublicKey(data);
     },
 
     async signEd25519(
@@ -276,15 +351,18 @@ export function pcscPivTransport(channel: PcscChannel): PivTransport {
  * Until that (A) increment lands WITH hardware, the path below stays
  * fail-closed and is NEVER bolted in unverified.
  */
-export async function connectPcscChannel(): Promise<PcscChannel> {
-  // Indirect specifier so bundlers/tsc don't hard-require the optional
-  // module; absence is an expected, fail-closed BUILD condition (NOT a
-  // recoverable "reader not plugged in" — a missing binding cannot be
-  // fixed by waiting, so it must NOT be retried by the connect loop).
-  const moduleName = "pcsclite";
+export async function connectPcscChannel(
+  importPcsclite: PcscliteImporter = realPcscliteImporter,
+): Promise<PcscChannel> {
+  // 1. Load the OPTIONAL binding. A failed import is a non-recoverable
+  //    BUILD condition (NOT a recoverable "reader not plugged in yet" —
+  //    a missing binding cannot be fixed by waiting, so the connect loop
+  //    must NOT retry it). The importer is injectable ONLY so the
+  //    hermetic unit suite drives this path deterministically without
+  //    depending on physical absence of the binding.
   let mod: unknown;
   try {
-    mod = await import(/* @vite-ignore */ moduleName);
+    mod = await importPcsclite();
   } catch {
     throw new PcscBuildError(
       "the native PIV/PC/SC transport is not wired in this build: the " +
@@ -295,16 +373,282 @@ export async function connectPcscChannel(): Promise<PcscChannel> {
         "falls back.",
     );
   }
-  // The real binding wiring (reader enumeration, connect, transmit
-  // Buffer↔Uint8Array — the GATE-(A) plan above) is exercised ONLY at
-  // the YubiKey human gate; until it lands WITH hardware this stays
-  // fail-closed as a non-recoverable BUILD condition (it must NOT be
-  // retried as if it were merely an unplugged reader).
-  void mod;
-  throw new PcscBuildError(
-    "the native PIV/PC/SC transport is not wired in this build: no PC/SC " +
-      "reader/token round-trip is available here (verified only at the " +
-      "YubiKey ceremony gate). Use a file: hex key for the lower-" +
-      "assurance air-gapped/successor path — it never silently falls back.",
-  );
+  // ESM-vs-CJS interop: `pcsclite` is a CJS module exporting a factory
+  // function; under dynamic import it may surface as the function itself
+  // or on `.default`. A binding that is present but not a callable
+  // factory is also a non-recoverable BUILD condition.
+  const factory: unknown =
+    typeof mod === "function"
+      ? mod
+      : mod && typeof mod === "object" && "default" in mod
+        ? (mod as { default: unknown }).default
+        : undefined;
+  if (typeof factory !== "function") {
+    throw new PcscBuildError(
+      "the native PIV/PC/SC transport is not wired in this build: the " +
+        "'pcsclite' binding loaded but did not expose a callable factory. " +
+        "Use the genesis-ceremony build and a connected reader, or a " +
+        "file: hex key (lower assurance). It never silently falls back.",
+    );
+  }
+
+  // 2. Open the PCSC context (EventEmitter). A binding/daemon-level
+  //    error before any reader is enumerated is treated as recoverable
+  //    only when it positively looks like an absent-hardware condition;
+  //    otherwise it is fatal (we never downgrade an unexpected fault).
+  let pcsc: PcscLiteLike;
+  try {
+    pcsc = (factory as () => PcscLiteLike)();
+  } catch (err) {
+    if (looksLikeAbsentHardware(err)) {
+      throw new PcscNotReadyError(
+        "no PC/SC reader is available yet (the PC/SC subsystem reported " +
+          "no reader). Insert the YubiKey/reader and it will be retried.",
+      );
+    }
+    throw err;
+  }
+
+  // 3. ONE attempt: enumerate readers, wait (bounded, cooperative — NOT
+  //    a busy loop) for a reader with a card PRESENT, connect SHARED,
+  //    and resolve a PcscChannel. ANY absent/empty/removed condition →
+  //    PcscNotReadyError (the connectPcscChannelWithPrompt loop OWNS the
+  //    prompt + wait + retry — we do NOT duplicate it here, just make
+  //    ONE bounded attempt and surface the recoverable state). The
+  //    handle is always torn down on every path; a card handle is never
+  //    leaked.
+  const ATTEMPT_BUDGET_MS = 8_000;
+
+  return await new Promise<PcscChannel>((resolve, reject) => {
+    let settled = false;
+    let activeReader: PcscReaderLike | null = null;
+    let connectedReader: PcscReaderLike | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const teardownContext = () => {
+      try {
+        pcsc.close();
+      } catch {
+        /* best-effort: never mask the original outcome */
+      }
+    };
+
+    const disconnectReader = (r: PcscReaderLike, done: () => void) => {
+      try {
+        r.disconnect((_err: unknown) => {
+          try {
+            r.close();
+          } catch {
+            /* ignore */
+          }
+          done();
+        });
+      } catch {
+        try {
+          r.close();
+        } catch {
+          /* ignore */
+        }
+        done();
+      }
+    };
+
+    const finishOk = (channel: PcscChannel) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(channel);
+    };
+
+    const finishErr = (e: unknown) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // Clean teardown on EVERY error path: never leak a connected card
+      // handle. Disconnect the connected reader (if any), then close the
+      // PCSC context, then reject with the (classified) error.
+      const after = () => {
+        teardownContext();
+        reject(e);
+      };
+      if (connectedReader) {
+        disconnectReader(connectedReader, after);
+      } else {
+        after();
+      }
+    };
+
+    // Bounded: this is ONE attempt. If no reader+card becomes PRESENT
+    // within the budget, surface the RECOVERABLE not-ready state so the
+    // caller's loop prompts + waits + retries (it is NOT a failure).
+    timer = setTimeout(() => {
+      finishErr(
+        new PcscNotReadyError(
+          "no YubiKey/PC/SC reader with a card became present yet. " +
+            "Insert the YubiKey into the reader; it will be retried.",
+        ),
+      );
+    }, ATTEMPT_BUDGET_MS);
+    if (typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+
+    pcsc.on("error", (err: unknown) => {
+      // A context-level error: recoverable only if it positively looks
+      // like absent hardware; otherwise fatal (never downgraded).
+      if (looksLikeAbsentHardware(err)) {
+        finishErr(
+          new PcscNotReadyError(
+            "the PC/SC subsystem reported no reader/card yet — insert the " +
+              "YubiKey; it will be retried.",
+          ),
+        );
+      } else {
+        finishErr(
+          err instanceof Error ? err : new Error(String(err)),
+        );
+      }
+    });
+
+    pcsc.on("reader", (reader: PcscReaderLike) => {
+      // First usable reader wins; ignore any extra readers for this
+      // single attempt (a single physical token services one read).
+      if (activeReader || settled) return;
+      activeReader = reader;
+
+      reader.on("error", (err: unknown) => {
+        if (looksLikeAbsentHardware(err)) {
+          finishErr(
+            new PcscNotReadyError(
+              "the reader reported no card yet — insert the YubiKey; it " +
+                "will be retried.",
+            ),
+          );
+        } else {
+          finishErr(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+
+      reader.on("end", () => {
+        // Reader was removed mid-attempt → recoverable not-ready.
+        finishErr(
+          new PcscNotReadyError(
+            "the PC/SC reader was removed — re-insert it; it will be " +
+              "retried.",
+          ),
+        );
+      });
+
+      const onPresent = () => {
+        reader.connect(
+          { share_mode: reader.SCARD_SHARE_SHARED },
+          (err: unknown, protocol: number) => {
+            if (settled) return;
+            if (err) {
+              // connect failed: classify. An absent/removed card here is
+              // recoverable; anything else is fatal.
+              if (looksLikeAbsentHardware(err)) {
+                finishErr(
+                  new PcscNotReadyError(
+                    "the card was not ready for connect (likely removed) " +
+                      "— re-insert the YubiKey; it will be retried.",
+                  ),
+                );
+              } else {
+                finishErr(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              }
+              return;
+            }
+            connectedReader = reader;
+            // The single hardware operation behind PcscChannel.transmit:
+            // marshal Uint8Array → Buffer out, Buffer → Uint8Array back.
+            // The SELECT/VERIFY/GA/GENERATE sequencing + 61xx/6Cxx
+            // chaining + status-word interpretation all live in
+            // send()/pcscPivTransport — the binding ONLY moves bytes.
+            const channel: PcscChannel = {
+              transmit(commandBytes: Uint8Array): Promise<Uint8Array> {
+                return new Promise<Uint8Array>((res, rej) => {
+                  if (settled && !connectedReader) {
+                    rej(
+                      new PcscNotReadyError(
+                        "the PC/SC channel was already torn down.",
+                      ),
+                    );
+                    return;
+                  }
+                  try {
+                    reader.transmit(
+                      // copy into a fresh Buffer-compatible Uint8Array;
+                      // never hand the codec's buffer to native code.
+                      Uint8Array.from(commandBytes),
+                      // max R-APDU: 256 data + 2 SW + slack.
+                      264,
+                      protocol,
+                      (txErr: unknown, response: unknown) => {
+                        if (txErr) {
+                          // A card removed mid-op is recoverable; any
+                          // other transmit fault is fatal (never
+                          // silently downgraded).
+                          rej(
+                            looksLikeAbsentHardware(txErr)
+                              ? new PcscNotReadyError(
+                                  "the card was removed during a PC/SC " +
+                                    "exchange — re-insert it; it will be " +
+                                    "retried.",
+                                )
+                              : txErr instanceof Error
+                                ? txErr
+                                : new Error(String(txErr)),
+                          );
+                          return;
+                        }
+                        if (
+                          !response ||
+                          typeof (response as { length?: unknown })
+                            .length !== "number"
+                        ) {
+                          rej(
+                            new PcscSecurityError(
+                              "the PC/SC reader returned an empty/invalid " +
+                                "response APDU — refusing to proceed on " +
+                                "the root-of-trust path.",
+                            ),
+                          );
+                          return;
+                        }
+                        res(
+                          Uint8Array.from(response as ArrayLike<number>),
+                        );
+                      },
+                    );
+                  } catch (syncErr) {
+                    rej(
+                      syncErr instanceof Error
+                        ? syncErr
+                        : new Error(String(syncErr)),
+                    );
+                  }
+                });
+              },
+            };
+            finishOk(channel);
+          },
+        );
+      };
+
+      reader.on("status", (status: { state: number }) => {
+        if (settled || connectedReader) return;
+        const changes = reader.state ^ status.state;
+        reader.state = status.state;
+        if (
+          changes & reader.SCARD_STATE_PRESENT &&
+          status.state & reader.SCARD_STATE_PRESENT
+        ) {
+          onPresent();
+        }
+      });
+    });
+  });
 }
