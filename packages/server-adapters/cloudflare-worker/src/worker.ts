@@ -21,12 +21,9 @@ import {
   type RepoState,
 } from "./policy.js";
 import type {
-  Envelope,
   KeyFile,
   KeyRedirect,
-  Mandate,
-  RootPolicy,
-  TrackPolicy,
+  MandateV2,
 } from "@maintainers/protocol";
 
 export interface Env {
@@ -399,11 +396,9 @@ async function fetchMaintainersState(
   branch: string,
   pat: string,
 ): Promise<RepoState> {
-  // Read .maintainers/policy.json if present.
-  const rootBytes = await ghReadFile(repo, ".maintainers/policy.json", branch, pat);
-  const rootPolicy = rootBytes ? (parseJsonOrNull(rootBytes) as RootPolicy | null) : null;
-
-  const tracks = new Map<string, { policy: TrackPolicy; mandates: Mandate[] }>();
+  // v2: there is NO policy.json (root or track) — the succession rule
+  // is folded into each mandate.
+  const tracks = new Map<string, MandateV2[]>();
   const keyFiles = new Map<string, KeyFile>();
 
   // Discover tracks.
@@ -411,26 +406,27 @@ async function fetchMaintainersState(
   for (const dir of trackDirs) {
     if (dir.type !== "dir") continue;
     const trackName = dir.name;
-    const policyBytes = await ghReadFile(repo, `.maintainers/tracks/${trackName}/policy.json`, branch, pat);
-    if (!policyBytes) continue;
-    const policy = parseJsonOrNull(policyBytes) as TrackPolicy | null;
-    if (!policy) continue;
-    // Walk mandates/ and reconstruct canonical-log order using commit history.
+    // Walk mandates/, keep only well-shaped v2 mandates.
     const mandateEntries = await ghListDir(repo, `.maintainers/tracks/${trackName}/mandates`, branch, pat);
-    const fileBytes = new Map<string, Mandate>();
+    const fileBytes = new Map<string, MandateV2>();
     for (const f of mandateEntries) {
       if (f.type !== "file" || !f.name.endsWith(".json")) continue;
       const b = await ghReadFile(repo, f.path, branch, pat);
       if (!b) continue;
-      const parsed = parseJsonOrNull(b) as Mandate | null;
-      if (parsed && parsed.kind === "Mandate") fileBytes.set(f.path, parsed);
+      const parsed = parseJsonOrNull(b) as MandateV2 | null;
+      if (parsed && parsed.kind === "Mandate" && parsed.version === 2) {
+        fileBytes.set(f.path, parsed);
+      }
     }
-    // Canonical log order: by issuedAt timestamp ascending. Git history
-    // would be ideal, but issuedAt is in canonical bytes and signed —
-    // an attacker can't backdate without breaking signatures or the
-    // verifier's `issued-before-predecessor` check.
-    const mandates = Array.from(fileBytes.values()).sort((a, b) => Date.parse(a.issuedAt) - Date.parse(b.issuedAt));
-    tracks.set(trackName, { policy, mandates });
+    if (fileBytes.size === 0) continue;
+    // Canonical log order: by issuedAt timestamp ascending. issuedAt is
+    // in the canonical bytes and signed — an attacker can't backdate
+    // without breaking signatures or the verifier's
+    // `issued-before-predecessor` check.
+    const mandates = Array.from(fileBytes.values()).sort(
+      (a, b) => Date.parse(a.issuedAt) - Date.parse(b.issuedAt),
+    );
+    tracks.set(trackName, mandates);
   }
 
   // Discover keys.
@@ -445,7 +441,7 @@ async function fetchMaintainersState(
     }
   }
 
-  return { rootPolicy, tracks, keyFiles };
+  return { tracks, keyFiles };
 }
 
 function parseJsonOrNull(bytes: Uint8Array): unknown | null {

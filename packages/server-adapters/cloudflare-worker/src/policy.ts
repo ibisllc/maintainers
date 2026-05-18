@@ -1,5 +1,7 @@
 /**
  * Per-envelope policy enforcement for the Model A Worker.
+ * **LOCKED Phase-2 v2 model** (Mandate v2; verify FORWARD from the
+ * first on-repo mandate; no policy.json; holder-signs endorsements).
  *
  * The Worker holds a PAT capable of pushing to the target repo. Policy
  * is therefore the gate: every commit is gated on the request's signed
@@ -9,78 +11,87 @@
  * commit):
  *
  *   1. Path-prefix fence — the target path MUST begin with
- *      `.maintainers/` and MUST NOT contain `..` or `//`. Enforced
- *      *before* any envelope inspection in case a future verifier bug
- *      ever lets a malformed envelope through.
+ *      `.maintainers/` and MUST NOT contain `..` or `//`.
  *   2. Envelope-shape fence — body MUST parse as one of the known
- *      envelope kinds at the expected version. Unknown kinds are
- *      refused; the spec's "ignore unknown for authority decisions"
- *      rule applies to consumers, not to a write-gate.
+ *      envelope kinds at the expected version (Mandate = v2; the
+ *      identity/endorsement envelopes = v1). Unknown kinds are refused.
  *   3. Canonical-bytes fence — the request's `envelopeBytes` MUST
- *      re-derive to the same canonical bytes the policy module
- *      computes locally from the parsed envelope. This prevents the
- *      client from sending an envelope it didn't actually sign.
- *   4. Signature fence — every signature in the envelope MUST verify
- *      against those canonical bytes.
- *   5. Authority fence — the signers MUST satisfy the relevant track's
- *      approval rule, given the current on-repo state at the moment
- *      of the request.
+ *      re-derive to the same canonical bytes the policy module computes.
+ *   4. Signature fence — every signature MUST verify against those
+ *      canonical bytes.
+ *   5. Authority fence — for a Mandate, appending it must keep a valid
+ *      forward chain anchored at the first on-repo mandate (an empty
+ *      track ⇒ a valid self-signed v2 root — "from-scratch" is
+ *      protocol-unauthenticated by design; the trust is the baked pin
+ *      downstream, see the v2 security boundary). For a Release/Ca
+ *      endorsement, the signer MUST be the v2 authority `holder` at the
+ *      relevant clock (issuedAt / NOW respectively).
  *
  * This file holds the pure policy. The Worker entrypoint wraps it with
- * I/O against the GitHub Contents API (read current state; write the
- * commit) and with rate-limiting.
+ * I/O against the GitHub Contents API and with rate-limiting.
  */
 
 import {
-  canonicalMandate,
+  canonicalMandateV2,
   canonicalKeyFile,
   canonicalKeyRedirect,
   canonicalEmailRotation,
   canonicalKeyIntroductionRequest,
   canonicalReleaseEndorsement,
   canonicalCaEndorsement,
+  mandatePinHash,
   verify,
   bytesToHex,
-  hexToBytes,
-  verifyTrack,
-  currentAuthority,
-  lastExpiredMandate,
-  type Envelope,
-  type Mandate,
+  verifyMandateChainFromPin,
+  currentAuthorityV2,
+  type MandateV2,
   type KeyFile,
   type KeyRedirect,
   type EmailRotation,
   type KeyIntroductionRequest,
   type ReleaseEndorsement,
   type CaEndorsement,
-  type TrackPolicy,
-  type RootPolicy,
-  type ApprovalRule,
   type Pubkey,
-  type VerifiedTrack,
 } from "@maintainers/protocol";
 
 export const MAINTAINERS_PREFIX = ".maintainers/";
+
+/**
+ * The worker's envelope union. Deliberately NOT the protocol `Envelope`
+ * (which still carries the v1 `Mandate` member until c4.5e): the worker
+ * is v2-only, so a Mandate here is always a `MandateV2`.
+ */
+type WorkerEnvelope =
+  | MandateV2
+  | KeyFile
+  | KeyRedirect
+  | EmailRotation
+  | KeyIntroductionRequest
+  | ReleaseEndorsement
+  | CaEndorsement;
 
 export type PolicyDecision =
   | { ok: true; commitMessage: string }
   | { ok: false; status: number; reason: string; detail?: string };
 
 export interface RepoState {
-  /** Parsed root policy if present, else null (genesis condition). */
-  rootPolicy: RootPolicy | null;
-  /** Per-track policy + ordered mandates parsed from the on-repo log. */
-  tracks: Map<string, { policy: TrackPolicy; mandates: Mandate[] }>;
-  /** Known KeyFiles indexed by pubkey (after redirects resolved). */
+  /**
+   * v2 mandates per track, in canonical-log order (the Worker
+   * entrypoint sorts by issuedAt ascending — the same canonical-log
+   * substitute the on-disk reader uses; backdating is defeated by the
+   * signed `issuedAt` + the forward verifier's predecessor checks).
+   * There is NO policy.json in v2 (root or track).
+   */
+  tracks: Map<string, MandateV2[]>;
+  /** Known KeyFiles indexed by pubkey. */
   keyFiles: Map<Pubkey, KeyFile>;
 }
 
 /**
  * Decide whether a candidate envelope-bearing write is acceptable.
  *
- * Pure function: all I/O (read the repo, write the commit) lives in
- * the Worker entrypoint. This lets us unit-test every branch without
- * a GitHub mock — just feed in a synthetic RepoState.
+ * Pure function: all I/O lives in the Worker entrypoint, so every
+ * branch is unit-testable from a synthetic RepoState.
  */
 export function decide(input: {
   path: string;
@@ -89,17 +100,24 @@ export function decide(input: {
   state: RepoState;
   now: Date;
 }): PolicyDecision {
-  // Fence 1: path-prefix
   const pathCheck = checkPath(input.path);
   if (!pathCheck.ok) return pathCheck;
 
-  // Fence 2: envelope-shape
   const shaped = parseEnvelope(input.envelope);
   if (!shaped.ok) return shaped;
   const envelope = shaped.envelope;
 
-  // Fence 3: canonical-bytes match
-  const expectedBytes = canonicalBytesFor(envelope);
+  let expectedBytes: Uint8Array;
+  try {
+    expectedBytes = canonicalBytesFor(envelope);
+  } catch (err) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "canonical-bytes-error",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
   const expectedHex = bytesToHex(expectedBytes);
   if (input.envelopeBytesHex.toLowerCase() !== expectedHex) {
     return {
@@ -110,11 +128,9 @@ export function decide(input: {
     };
   }
 
-  // Fence 4: signatures verify
   const sigCheck = checkSignatures(envelope, expectedBytes);
   if (!sigCheck.ok) return sigCheck;
 
-  // Fence 5: authority
   const authorityCheck = checkAuthority(envelope, input.state, input.now);
   if (!authorityCheck.ok) return authorityCheck;
 
@@ -139,19 +155,18 @@ function checkPath(p: string): { ok: true } | { ok: false; status: number; reaso
   if (p.includes("..") || p.includes("//") || p.includes("\\")) {
     return { ok: false, status: 400, reason: "path-traversal" };
   }
-  // Disallow trailing slash / directory writes; the Contents API
-  // expects a file path.
   if (p.endsWith("/")) {
     return { ok: false, status: 400, reason: "path-is-directory" };
   }
-  // Reasonable hard cap to keep the surface small.
   if (p.length > 512) {
     return { ok: false, status: 400, reason: "path-too-long" };
   }
   return { ok: true };
 }
 
-type ParsedEnvelope = { ok: true; envelope: Envelope } | { ok: false; status: number; reason: string; detail?: string };
+type ParsedEnvelope =
+  | { ok: true; envelope: WorkerEnvelope }
+  | { ok: false; status: number; reason: string; detail?: string };
 
 function parseEnvelope(raw: unknown): ParsedEnvelope {
   if (typeof raw !== "object" || raw === null) {
@@ -160,30 +175,37 @@ function parseEnvelope(raw: unknown): ParsedEnvelope {
   const obj = raw as Record<string, unknown>;
   const kind = obj["kind"];
   const version = obj["version"];
-  if (version !== 1) {
-    return { ok: false, status: 400, reason: "envelope-version-unsupported" };
-  }
   switch (kind) {
     case "Mandate":
-      return shapeMandate(obj);
+      // v2 is THE Mandate version; v1 is retired.
+      if (version !== 2) {
+        return { ok: false, status: 400, reason: "mandate-version-unsupported" };
+      }
+      return shapeMandateV2(obj);
     case "KeyFile":
+      if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeKeyFile(obj);
     case "KeyRedirect":
+      if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeKeyRedirect(obj);
     case "EmailRotation":
+      if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeEmailRotation(obj);
     case "KeyIntroductionRequest":
+      if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeKeyIntroductionRequest(obj);
     case "ReleaseEndorsement":
+      if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeReleaseEndorsement(obj);
     case "CaEndorsement":
+      if (version !== 1) return { ok: false, status: 400, reason: "envelope-version-unsupported" };
       return shapeCaEndorsement(obj);
     default:
       return { ok: false, status: 400, reason: "envelope-kind-unknown" };
   }
 }
 
-function shapeMandate(obj: Record<string, unknown>): ParsedEnvelope {
+function shapeMandateV2(obj: Record<string, unknown>): ParsedEnvelope {
   if (
     typeof obj["mandateId"] !== "string" ||
     typeof obj["track"] !== "string" ||
@@ -191,6 +213,11 @@ function shapeMandate(obj: Record<string, unknown>): ParsedEnvelope {
     typeof obj["issuedAt"] !== "string" ||
     typeof obj["expiresAt"] !== "string" ||
     !Array.isArray(obj["successors"]) ||
+    typeof obj["approvalRule"] !== "object" ||
+    obj["approvalRule"] === null ||
+    typeof obj["minSuccessors"] !== "number" ||
+    typeof obj["maxDurationSeconds"] !== "number" ||
+    typeof obj["defaultDurationSeconds"] !== "number" ||
     typeof obj["signedBy"] !== "string" ||
     !Array.isArray(obj["signatures"])
   ) {
@@ -198,6 +225,10 @@ function shapeMandate(obj: Record<string, unknown>): ParsedEnvelope {
   }
   for (const s of obj["successors"]) {
     if (typeof s !== "string") return { ok: false, status: 400, reason: "mandate-successors-shape" };
+  }
+  const ar = obj["approvalRule"] as Record<string, unknown>;
+  if (ar["kind"] !== "threshold" || typeof ar["threshold"] !== "number") {
+    return { ok: false, status: 400, reason: "mandate-approvalrule-shape" };
   }
   for (const s of obj["signatures"]) {
     if (
@@ -209,7 +240,7 @@ function shapeMandate(obj: Record<string, unknown>): ParsedEnvelope {
       return { ok: false, status: 400, reason: "mandate-signatures-shape" };
     }
   }
-  return { ok: true, envelope: obj as unknown as Mandate };
+  return { ok: true, envelope: obj as unknown as MandateV2 };
 }
 
 function shapeKeyFile(obj: Record<string, unknown>): ParsedEnvelope {
@@ -302,10 +333,10 @@ function shapeCaEndorsement(obj: Record<string, unknown>): ParsedEnvelope {
   return { ok: true, envelope: obj as unknown as CaEndorsement };
 }
 
-function canonicalBytesFor(e: Envelope): Uint8Array {
+function canonicalBytesFor(e: WorkerEnvelope): Uint8Array {
   switch (e.kind) {
     case "Mandate":
-      return canonicalMandate(e);
+      return canonicalMandateV2(e);
     case "KeyFile":
       return canonicalKeyFile(e);
     case "KeyRedirect":
@@ -322,7 +353,7 @@ function canonicalBytesFor(e: Envelope): Uint8Array {
 }
 
 function checkSignatures(
-  e: Envelope,
+  e: WorkerEnvelope,
   bytes: Uint8Array,
 ): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
   if (
@@ -346,8 +377,7 @@ function checkSignatures(
     return { ok: true };
   }
   // Single-signature envelopes (KeyFile, KeyRedirect, EmailRotation,
-  // KeyIntroductionRequest): the envelope's `pubkey` field is the
-  // signer; the `signature` field is the one signature we check.
+  // KeyIntroductionRequest): the `pubkey` field is the signer.
   const pub = (e as { pubkey: Pubkey }).pubkey;
   const sig = (e as { signature: string }).signature;
   if (!verify(sig, bytes, pub)) {
@@ -357,83 +387,70 @@ function checkSignatures(
 }
 
 function checkAuthority(
-  e: Envelope,
+  e: WorkerEnvelope,
   state: RepoState,
   now: Date,
 ): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
   switch (e.kind) {
     case "Mandate":
-      return checkMandateAuthority(e, state, now);
+      return checkMandateAuthority(e, state);
     case "ReleaseEndorsement":
-      return checkEndorsementAuthority(e, state, now);
+      return checkEndorsementAuthority(e, state);
     case "CaEndorsement":
       return checkCaEndorsementAuthority(e, state, now);
     case "KeyFile":
     case "KeyRedirect":
     case "EmailRotation":
     case "KeyIntroductionRequest":
-      // These envelopes are self-signed by their pubkey. Authority is
-      // "the pubkey claims to be the holder of itself" — which is
-      // trivially true. We additionally require, for KeyFile, that the
-      // pubkey appears in some current authority's successors list OR
-      // is already a known authorized signer on at least one track.
-      // For KeyIntroductionRequest no authority is required (it's an
-      // open-membership claim).
-      // For EmailRotation / KeyRedirect we require the pubkey already
-      // exists in the keys directory (a key cannot rotate an identity
-      // it has never been introduced as).
       return checkKeyEnvelopeAuthority(e, state);
   }
 }
 
+/**
+ * v2 Mandate write-gate. Empty track ⇒ the candidate must be a valid
+ * self-signed v2 ROOT (from-scratch; protocol-unauthenticated by design
+ * — the trust is the baked pin downstream). Non-empty ⇒ appending the
+ * candidate must keep a valid forward chain anchored at the first
+ * on-repo mandate (i.e. the candidate satisfies the predecessor's
+ * embedded approvalRule / minSuccessors / maxDuration — the L3 one
+ * rule). The Worker has no baked pin; the on-repo first mandate IS the
+ * anchor for "is this a legitimate continuation of what's there".
+ */
 function checkMandateAuthority(
-  m: Mandate,
+  m: MandateV2,
   state: RepoState,
-  now: Date,
 ): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
-  const trackEntry = state.tracks.get(m.track);
-  if (!trackEntry) {
-    // Track does not yet exist. Permitted ONLY in the genesis condition:
-    // no `.maintainers/` state at all (no rootPolicy and no tracks).
-    if (state.rootPolicy === null && state.tracks.size === 0) {
-      // Genesis. Validate as a self-signed genesis under the default
-      // 1-of-any rule. The verifier package enforces this.
-      const policy: TrackPolicy = {
-        track: m.track,
-        defaultMandateDuration: "60d",
-        approvalRule: { kind: "threshold", threshold: 1, of: "anyAuthorizedSigner" },
+  const existing = state.tracks.get(m.track) ?? [];
+  if (existing.length === 0) {
+    // From-scratch root: well-formed + self-signed (signedBy ∈
+    // signatures) + sane window + every signature verifies.
+    const chain = verifyMandateChainFromPin(mandatePinHash(m), [m]);
+    const accepted =
+      chain.root !== null &&
+      chain.validMandates.length === 1 &&
+      chain.validMandates[0]!.mandateId === m.mandateId;
+    if (!accepted) {
+      return {
+        ok: false,
+        status: 403,
+        reason: "mandate-rejected",
+        detail: chain.rootError ?? "from-scratch-root-invalid",
       };
-      const verified = verifyTrack(m.track, policy, [m]);
-      if (verified.validMandates.length === 0) {
-        const rej = verified.rejections[0];
-        return {
-          ok: false,
-          status: 403,
-          reason: "genesis-rejected",
-          detail: rej?.reason,
-        };
-      }
-      return { ok: true };
     }
-    return {
-      ok: false,
-      status: 403,
-      reason: "unknown-track",
-      detail: `track "${m.track}" not declared in policy.json`,
-    };
+    return { ok: true };
   }
-
-  const allMandates = [...trackEntry.mandates, m];
-  const verified = verifyTrack(m.track, trackEntry.policy, allMandates);
-  // The mandate we just appended must be in validMandates.
-  const accepted = verified.validMandates.some((vm) => vm.mandateId === m.mandateId);
+  // Succession: anchor at the first on-repo mandate, verify forward
+  // including the candidate.
+  const log = [...existing, m];
+  const chain = verifyMandateChainFromPin(mandatePinHash(existing[0]!), log);
+  const accepted = chain.validMandates.some((vm) => vm.mandateId === m.mandateId);
   if (!accepted) {
-    const rej = verified.rejections.find((r) => r.mandate.mandateId === m.mandateId);
+    const rej = chain.rejections.find((r) => r.mandate.mandateId === m.mandateId);
     return {
       ok: false,
       status: 403,
       reason: "mandate-rejected",
-      detail: rej?.reason,
+      detail: rej?.reason ?? chain.rootError ?? "not-in-valid-forward-chain",
     };
   }
   return { ok: true };
@@ -442,66 +459,32 @@ function checkMandateAuthority(
 function checkEndorsementAuthority(
   e: ReleaseEndorsement,
   state: RepoState,
-  _now: Date,
 ): { ok: true } | { ok: false; status: number; reason: string; detail?: string } {
-  const trackEntry = state.tracks.get("release");
-  if (!trackEntry) {
-    return {
-      ok: false,
-      status: 403,
-      reason: "release-track-not-declared",
-    };
+  const releaseMandates = state.tracks.get("release");
+  if (!releaseMandates || releaseMandates.length === 0) {
+    return { ok: false, status: 403, reason: "release-track-not-declared" };
   }
-  const verified = verifyTrack("release", trackEntry.policy, trackEntry.mandates);
-  const authority = currentAuthority(verified, new Date(Date.parse(e.issuedAt)));
+  const chain = verifyMandateChainFromPin(
+    mandatePinHash(releaseMandates[0]!),
+    releaseMandates,
+  );
+  const authority = currentAuthorityV2(chain, new Date(Date.parse(e.issuedAt)));
   if (!authority) {
-    return {
-      ok: false,
-      status: 403,
-      reason: "no-active-release-authority",
-    };
+    return { ok: false, status: 403, reason: "no-active-release-authority" };
   }
-  // The signedBy must be the current holder (1-of-N case) or in the
-  // configured signer-set (M-of-{a,b,c} case).
-  const rule = trackEntry.policy.approvalRule;
-  if (rule.kind === "threshold" && rule.of === "anyAuthorizedSigner") {
-    if (e.signedBy !== authority.holder) {
-      return {
-        ok: false,
-        status: 403,
-        reason: "endorsement-signer-not-holder",
-      };
-    }
-    if (e.signatures.length < rule.threshold) {
-      return {
-        ok: false,
-        status: 403,
-        reason: "endorsement-approval-rule-unsatisfied",
-      };
-    }
-  } else if (rule.kind === "threshold") {
-    const required = new Set(rule.of);
-    let matches = 0;
-    for (const s of e.signatures) if (required.has(s.pubkey)) matches++;
-    if (matches < rule.threshold) {
-      return {
-        ok: false,
-        status: 403,
-        reason: "endorsement-approval-rule-unsatisfied",
-      };
-    }
+  // v2 holder-signs: the operational authority signs releases.
+  if (e.signedBy !== authority.holder) {
+    return { ok: false, status: 403, reason: "endorsement-signer-not-holder" };
   }
   return { ok: true };
 }
 
 /**
- * CaEndorsement authority — the deliberate deviation from
- * ReleaseEndorsement: the signer is checked against the ca-track
- * authority at the verifier's clock `now`, NOT at the endorsement's
- * `issuedAt`, and the lease window is enforced. A backdated `issuedAt`
- * cannot resurrect a key whose ca-track authority has since rotated,
- * and a lapsed lease is rejected with no revocation list. See
- * docs/spec/v1.md §5.1.
+ * CaEndorsement authority — the §5.1 deviation: the signer is checked
+ * against the v2 ca-track authority at the verifier's clock `now`, NOT
+ * at the endorsement's `issuedAt`, and the lease window is enforced. A
+ * backdated `issuedAt` cannot resurrect a key whose ca-track authority
+ * has since rotated; a lapsed lease is rejected with no revocation list.
  */
 function checkCaEndorsementAuthority(
   e: CaEndorsement,
@@ -521,39 +504,18 @@ function checkCaEndorsementAuthority(
   if (nowMs >= na + SKEW_MS) {
     return { ok: false, status: 403, reason: "ca-endorsement-lease-expired" };
   }
-  const trackEntry = state.tracks.get(e.track);
-  if (!trackEntry) {
+  const caMandates = state.tracks.get(e.track);
+  if (!caMandates || caMandates.length === 0) {
     return { ok: false, status: 403, reason: "ca-track-not-declared" };
   }
-  const verified = verifyTrack(e.track, trackEntry.policy, trackEntry.mandates);
+  const chain = verifyMandateChainFromPin(mandatePinHash(caMandates[0]!), caMandates);
   // NOW, not issuedAt — the entire CaEndorsement security argument.
-  const authority = currentAuthority(verified, now);
+  const authority = currentAuthorityV2(chain, now);
   if (!authority) {
     return { ok: false, status: 403, reason: "no-active-ca-authority" };
   }
-  const rule = trackEntry.policy.approvalRule;
-  if (rule.kind === "threshold" && rule.of === "anyAuthorizedSigner") {
-    if (e.signedBy !== authority.holder) {
-      return { ok: false, status: 403, reason: "ca-endorsement-signer-not-holder" };
-    }
-    if (e.signatures.length < rule.threshold) {
-      return {
-        ok: false,
-        status: 403,
-        reason: "ca-endorsement-approval-rule-unsatisfied",
-      };
-    }
-  } else if (rule.kind === "threshold") {
-    const required = new Set(rule.of);
-    let matches = 0;
-    for (const s of e.signatures) if (required.has(s.pubkey)) matches++;
-    if (matches < rule.threshold) {
-      return {
-        ok: false,
-        status: 403,
-        reason: "ca-endorsement-approval-rule-unsatisfied",
-      };
-    }
+  if (e.signedBy !== authority.holder) {
+    return { ok: false, status: 403, reason: "ca-endorsement-signer-not-holder" };
   }
   return { ok: true };
 }
@@ -568,16 +530,13 @@ function checkKeyEnvelopeAuthority(
     return { ok: true };
   }
   if (e.kind === "KeyFile") {
-    // First-time KeyFile is allowed only if the pubkey is referenced
-    // by a current authority's mandate (introductionMandate). We
-    // don't try to look the mandate up here (we trust the field after
-    // signature verification — the signer attests the introduction).
-    // The follow-up mandate's verification will catch any pubkey not
-    // legitimately introduced.
+    // A KeyFile is a non-load-bearing identity label (verification
+    // operates on the pubkey, never the email). Self-signed ⇒ accept;
+    // a later mandate naming an illegitimate pubkey is what the forward
+    // verifier catches.
     return { ok: true };
   }
-  // EmailRotation / KeyRedirect require the pubkey to already exist
-  // in the on-repo state.
+  // EmailRotation / KeyRedirect require the pubkey to already exist.
   if (!state.keyFiles.has(e.pubkey)) {
     return {
       ok: false,
@@ -589,7 +548,7 @@ function checkKeyEnvelopeAuthority(
   return { ok: true };
 }
 
-function commitMessageFor(e: Envelope, now: Date): string {
+function commitMessageFor(e: WorkerEnvelope, now: Date): string {
   let pubkeyShort = "";
   switch (e.kind) {
     case "Mandate":
@@ -609,34 +568,47 @@ function commitMessageFor(e: Envelope, now: Date): string {
 
 /**
  * Compute the verified `.maintainers/` summary view returned by /verify.
- * Includes per-track current authority, takeover alarms (when a successor
- * signed a new mandate after expiry), and pending email rotations.
+ * Per-track current authority + takeover alarms, all over the v2
+ * verify-forward chain (anchored at each track's first on-repo mandate).
  */
 export function summarizeState(state: RepoState, now: Date): RepoSummary {
   const tracks: RepoSummary["tracks"] = [];
   const alarms: RepoSummary["takeoverAlarms"] = [];
 
-  for (const [name, entry] of state.tracks) {
-    const verified = verifyTrack(name, entry.policy, entry.mandates);
-    const current = currentAuthority(verified, now);
-    const expired = lastExpiredMandate(verified, now);
+  for (const [name, mandates] of state.tracks) {
+    if (mandates.length === 0) {
+      tracks.push({
+        name,
+        currentHolder: null,
+        currentMandateId: null,
+        currentExpiresAt: null,
+        successors: [],
+        mandateCount: 0,
+        rejectedCount: 0,
+      });
+      continue;
+    }
+    const chain = verifyMandateChainFromPin(mandatePinHash(mandates[0]!), mandates);
+    const current = currentAuthorityV2(chain, now);
+    const last = chain.validMandates[chain.validMandates.length - 1];
 
     tracks.push({
       name,
-      approvalRule: entry.policy.approvalRule,
       currentHolder: current?.holder ?? null,
       currentMandateId: current?.mandate.mandateId ?? null,
       currentExpiresAt: current?.mandate.expiresAt ?? null,
-      successors: current?.successors ?? expired?.successors ?? [],
-      mandateCount: verified.validMandates.length,
-      rejectedCount: verified.rejections.length,
+      successors: current?.successors ?? last?.successors ?? [],
+      mandateCount: chain.validMandates.length,
+      rejectedCount:
+        chain.rejections.length + (chain.rootError ? 1 : 0),
     });
 
-    // Derive TakeoverAlarms: a valid mandate signed by someone other
-    // than the prior holder, where prior had expired.
-    for (let i = 1; i < verified.validMandates.length; i++) {
-      const prev = verified.validMandates[i - 1]!;
-      const cur = verified.validMandates[i]!;
+    // Takeover = a valid mandate signed by someone other than the prior
+    // holder (the v2 chain has no holder-in-window/after-expiry split —
+    // succession is the single mechanism).
+    for (let i = 1; i < chain.validMandates.length; i++) {
+      const prev = chain.validMandates[i - 1]!;
+      const cur = chain.validMandates[i]!;
       if (cur.signedBy !== prev.holder) {
         alarms.push({
           track: name,
@@ -651,7 +623,6 @@ export function summarizeState(state: RepoState, now: Date): RepoSummary {
   }
 
   return {
-    rootPolicy: state.rootPolicy,
     tracks,
     keys: Array.from(state.keyFiles.values()).map((k) => ({
       pubkey: k.pubkey,
@@ -665,10 +636,8 @@ export function summarizeState(state: RepoState, now: Date): RepoSummary {
 }
 
 export interface RepoSummary {
-  rootPolicy: RootPolicy | null;
   tracks: {
     name: string;
-    approvalRule: ApprovalRule;
     currentHolder: Pubkey | null;
     currentMandateId: string | null;
     currentExpiresAt: string | null;
@@ -692,7 +661,3 @@ export interface RepoSummary {
   }[];
   verifiedAt: string;
 }
-
-/** Re-export verifier internals so tests can build synthetic RepoStates. */
-export { verifyTrack, currentAuthority, hexToBytes, bytesToHex };
-export type { VerifiedTrack };
