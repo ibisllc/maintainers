@@ -12,12 +12,26 @@ but not sufficient: a repo can be cloned, mirrored, forked, or moved,
 and you want authority to remain cryptographically verifiable across
 every copy.
 
+## Install
+
+The TypeScript reference implementation is published on the npm
+registry:
+
+```
+npm i @ibisllc/maintainers
+```
+
+(`packages/protocol` — ESM only; runtime deps `@noble/curves`,
+`@noble/hashes`. Conformance vectors + the spec ship inside the
+package.)
+
 ## Status
 
 This project is developed in the Flagship monorepo and mirrored to
-its standalone home at `github.com/ibisllc/maintainers`. All code,
-specs, and packages are designed for standalone use; none depend on
-Flagship internals.
+its standalone home at `github.com/ibisllc/maintainers`, and published
+to npm as [`@ibisllc/maintainers`](https://www.npmjs.com/package/@ibisllc/maintainers).
+All code, specs, and packages are designed for standalone use; none
+depend on Flagship internals.
 
 ## Structure
 

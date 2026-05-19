@@ -4,6 +4,13 @@
   "type": "module",
   "description": "Pin-a-mandate, verify-forward trust protocol: declare, renew, and transfer signing authority over a versioned artifact. The bake is the ceremony.",
   "license": "BUSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ibisllc/maintainers.git",
+    "directory": "packages/protocol"
+  },
+  "homepage": "https://github.com/ibisllc/maintainers/tree/main/packages/protocol#readme",
+  "bugs": "https://github.com/ibisllc/maintainers/issues",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
