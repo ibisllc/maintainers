@@ -20,6 +20,7 @@ import type {
   KeyIntroductionRequest,
   ReleaseEndorsement,
   CaEndorsement,
+  CheckpointRequest,
   Pubkey,
 } from "./types.js";
 
@@ -222,6 +223,76 @@ export function canonicalCaEndorsement(
     e.issuedAt,
     e.signedBy,
   ]);
+}
+
+/**
+ * CheckpointRequest canonical bytes.
+ * Tag: maintainers/checkpoint-request/v1
+ * Order (spec docs/maintainers-checkpoints-spec-v0.1.md open-detail
+ *   item 2): canonicalRepo | maintainersPath | currentMandateHash
+ *   | sourceCommit
+ *
+ * No predecessor / chain fields by design — like a CaEndorsement it is
+ * an independent statement; the §11 continuity rule is enforced by the
+ * registry bot over the project's public `.maintainers/` chain, not in
+ * these bytes. Authorisation is holder-signs (open-detail item 1).
+ */
+export function canonicalCheckpointRequest(
+  r: Omit<CheckpointRequest, "signatures">,
+): Uint8Array {
+  validateField("canonicalRepo", r.canonicalRepo);
+  if (r.canonicalRepo.length === 0) {
+    throw new CanonicalBytesError(
+      "canonicalRepo",
+      "empty-required",
+      'field "canonicalRepo" must not be empty',
+    );
+  }
+  validateField("maintainersPath", r.maintainersPath);
+  if (r.maintainersPath.length === 0) {
+    throw new CanonicalBytesError(
+      "maintainersPath",
+      "empty-required",
+      'field "maintainersPath" must not be empty',
+    );
+  }
+  validateSha256Prefixed("currentMandateHash", r.currentMandateHash);
+  validateField("sourceCommit", r.sourceCommit);
+  if (r.sourceCommit.length === 0) {
+    throw new CanonicalBytesError(
+      "sourceCommit",
+      "empty-required",
+      'field "sourceCommit" must not be empty',
+    );
+  }
+  return joinTagged("checkpoint-request", [
+    r.canonicalRepo,
+    r.maintainersPath,
+    r.currentMandateHash,
+    r.sourceCommit,
+  ]);
+}
+
+/**
+ * `sha256:<hex>` format check — the spec §7.1 / §9 mandate-hash form.
+ * Requires the literal `sha256:` prefix then exactly 64 lower-case hex
+ * digits (the {@link sha256Hex} / {@link mandatePinHash} output width),
+ * consistent with {@link validateHex}'s lower-case-hex discipline. No
+ * new hash format is invented — this is exactly the pin hash, prefixed.
+ */
+export function validateSha256Prefixed(name: string, value: string): void {
+  if (typeof value !== "string") {
+    throw new CanonicalBytesError(name, "wrong-shape", `field "${name}" must be a string`);
+  }
+  const prefix = "sha256:";
+  if (!value.startsWith(prefix)) {
+    throw new CanonicalBytesError(
+      name,
+      "wrong-shape",
+      `field "${name}" must be a "sha256:<hex>" string`,
+    );
+  }
+  validateHex(name, value.slice(prefix.length), 64);
 }
 
 /** Hex format check: ensures the string is exactly `length` lower-case hex digits. */

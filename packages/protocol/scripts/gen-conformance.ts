@@ -62,10 +62,12 @@ import {
   signMandate,
   signReleaseEndorsement,
   signCaEndorsement,
+  signCheckpointRequest,
 } from "../src/signing.js";
 import { mandatePinHash } from "../src/canonical.js";
 import type {
   CaEndorsement,
+  CheckpointRequest,
   Mandate,
   ReleaseEndorsement,
 } from "../src/types.js";
@@ -976,6 +978,399 @@ export function writeConformanceVectors(): string[] {
   return written;
 }
 
+// ===========================================================================
+// ADDITIVE checkpoint-request conformance set (Phase-H foundation).
+//
+// SEPARATE artifact. The shared 17-vector `manifest.json` + `vectors/`
+// above are NEVER touched by this code — the iOS/Android ports hard-assert
+// `count == 17` against THAT manifest under xcodebuild/gradle (not vitest),
+// so mutating it is a silent cross-repo break. This set lives entirely
+// under its own `conformance/checkpoint-request/` path with its own
+// manifest, generated the same deterministic way (fixed seeds / clocks /
+// UUIDs) and replayed through the REAL `verifyCheckpointRequest`.
+// ===========================================================================
+
+export interface CheckpointRequestVector {
+  name: string;
+  description: string;
+  input: {
+    pin: string;
+    now: string;
+    track: string;
+    mandatesByTrack: Record<string, Mandate[]>;
+    checkpointRequest: CheckpointRequest;
+  };
+  expect: {
+    accepted: boolean;
+    rejectReason: string | null;
+    subject: "checkpoint-request";
+    track: string;
+  };
+}
+
+interface MkCheckpoint {
+  canonicalRepo?: string;
+  maintainersPath?: string;
+  currentMandateHash?: string;
+  sourceCommit?: string;
+}
+
+function mkCheckpoint(
+  signers: { privKey: string }[],
+  o: MkCheckpoint,
+): CheckpointRequest {
+  return signCheckpointRequest(
+    {
+      kind: "CheckpointRequest",
+      version: 1,
+      canonicalRepo: o.canonicalRepo ?? "https://github.com/ibisllc/conformance-fixture",
+      maintainersPath: o.maintainersPath ?? ".maintainers/",
+      currentMandateHash: o.currentMandateHash ?? `sha256:${"ab".repeat(32)}`,
+      sourceCommit: o.sourceCommit ?? "0123456789abcdef0123456789abcdef01234567",
+    },
+    signers,
+  );
+}
+
+/**
+ * A ca-track mandate current at the fixed `now` used by every vector
+ * (2026-03-04T00:00:00Z) whose holder is `alice` — the project's current
+ * maintainer authority. Holder-signs: a checkpoint request is authorised
+ * iff `alice` (this holder) signed it.
+ */
+function checkpointAuthorityRoot(): Mandate {
+  return mk({
+    id: "00000000-0000-4000-8000-0000000000d1",
+    track: "ca",
+    holder: alice.pubKey,
+    issuedAt: "2026-01-01T00:00:00Z",
+    expiresAt: "2026-06-01T00:00:00Z",
+    successors: [backup.pubKey],
+    maxDurationSeconds: 365 * DAY,
+    defaultDurationSeconds: 180 * DAY,
+    signedBy: alice.pubKey,
+    signWith: [alice.privKey],
+  });
+}
+
+export function buildCheckpointRequestVectors(): CheckpointRequestVector[] {
+  const v: CheckpointRequestVector[] = [];
+  const NOW = "2026-03-04T00:00:00Z";
+  const VALID_HASH = `sha256:${mandatePinHash(checkpointAuthorityRoot())}`;
+
+  // ---- HAPPY: a holder-signed request, authority live at NOW ----------
+  {
+    const r = checkpointAuthorityRoot();
+    const cr = mkCheckpoint([{ privKey: alice.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    v.push({
+      name: "cr-happy-holder-signed",
+      description:
+        "A CheckpointRequest signed by the holder of the project's current (ca-track) mandate, with a chain anchored at the baked pin and a live authority at NOW ⇒ accepted (holder-signs, NOT the succession quorum).",
+      input: {
+        pin: mandatePinHash(r),
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: cr,
+      },
+      expect: {
+        accepted: true,
+        rejectReason: null,
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  // ---- NEG: signed by NOT the holder (a successor / other key) ---------
+  {
+    const r = checkpointAuthorityRoot();
+    const cr = mkCheckpoint([{ privKey: backup.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    v.push({
+      name: "cr-neg-signed-by-not-the-holder",
+      description:
+        "A CheckpointRequest cryptographically valid but signed by `backup` (a successor, NOT the current mandate holder `alice`) ⇒ holder-signs rejects 'signer-not-the-holder'. Proves the succession quorum does NOT authorise a checkpoint request.",
+      input: {
+        pin: mandatePinHash(r),
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: cr,
+      },
+      expect: {
+        accepted: false,
+        rejectReason: "signer-not-the-holder",
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  // ---- NEG: tampered canonical bytes (post-sign field mutation) --------
+  {
+    const r = checkpointAuthorityRoot();
+    const signed = mkCheckpoint([{ privKey: alice.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    const tampered: CheckpointRequest = {
+      ...signed,
+      sourceCommit: "ffffffffffffffffffffffffffffffffffffffff",
+    };
+    v.push({
+      name: "cr-neg-tampered-canonical-bytes",
+      description:
+        "A request whose `sourceCommit` was mutated after signing ⇒ the holder signature no longer verifies over the recomputed canonical bytes ⇒ rejects 'signature-invalid'.",
+      input: {
+        pin: mandatePinHash(r),
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: tampered,
+      },
+      expect: {
+        accepted: false,
+        rejectReason: "signature-invalid",
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  // ---- NEG: a field containing the canonical separator '|' -------------
+  {
+    const r = checkpointAuthorityRoot();
+    // Sign over clean bytes, then inject '|' so canonicalization throws on
+    // re-derivation in the verifier (totality: caught ⇒ invalid).
+    const signed = mkCheckpoint([{ privKey: alice.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    const poisoned: CheckpointRequest = {
+      ...signed,
+      maintainersPath: ".maintainers/|injected",
+    };
+    v.push({
+      name: "cr-neg-separator-in-field",
+      description:
+        "A `maintainersPath` containing the canonical-bytes separator '|' ⇒ canonicalCheckpointRequest throws inside the verifier and is CAUGHT (totality) ⇒ recorded as 'signature-invalid', never an exception.",
+      input: {
+        pin: mandatePinHash(r),
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: poisoned,
+      },
+      expect: {
+        accepted: false,
+        rejectReason: "signature-invalid",
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  // ---- NEG: an empty required field ------------------------------------
+  {
+    const r = checkpointAuthorityRoot();
+    const signed = mkCheckpoint([{ privKey: alice.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    const empty: CheckpointRequest = { ...signed, canonicalRepo: "" };
+    v.push({
+      name: "cr-neg-empty-required-field",
+      description:
+        "An empty `canonicalRepo` ⇒ canonicalCheckpointRequest throws 'empty-required' inside the verifier, CAUGHT (totality) ⇒ 'signature-invalid'.",
+      input: {
+        pin: mandatePinHash(r),
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: empty,
+      },
+      expect: {
+        accepted: false,
+        rejectReason: "signature-invalid",
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  // ---- NEG: signature-invalid (forged signature bytes) -----------------
+  {
+    const r = checkpointAuthorityRoot();
+    const signed = mkCheckpoint([{ privKey: alice.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    const forged: CheckpointRequest = {
+      ...signed,
+      signatures: [{ pubkey: alice.pubKey, sig: "00".repeat(64) }],
+    };
+    v.push({
+      name: "cr-neg-signature-invalid",
+      description:
+        "A request whose declared signature was replaced with a forged all-zero one ⇒ rejects 'signature-invalid' (the holder pubkey is present but the signature does not verify).",
+      input: {
+        pin: mandatePinHash(r),
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: forged,
+      },
+      expect: {
+        accepted: false,
+        rejectReason: "signature-invalid",
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  // ---- NEG: no live authority at NOW (absent pin ⇒ fail-closed) --------
+  {
+    const r = checkpointAuthorityRoot();
+    const cr = mkCheckpoint([{ privKey: alice.privKey }], {
+      currentMandateHash: VALID_HASH,
+    });
+    v.push({
+      name: "cr-neg-no-authority-at-now",
+      description:
+        "An absent baked pin ⇒ the chain never anchors ⇒ no maintainer authority at NOW ⇒ verifyCheckpointRequest rejects 'no-authority-at-now' even though the request itself is a perfectly valid holder-signature (fail-closed; never a fall-back).",
+      input: {
+        pin: "",
+        now: NOW,
+        track: "ca",
+        mandatesByTrack: { ca: [r] },
+        checkpointRequest: cr,
+      },
+      expect: {
+        accepted: false,
+        rejectReason: "no-authority-at-now",
+        subject: "checkpoint-request",
+        track: "ca",
+      },
+    });
+  }
+
+  return v;
+}
+
+// scripts/ -> packages/protocol -> packages -> <maintainers repo root>
+// Its OWN subdirectory; the shared CONFORMANCE_DIR is never written here.
+export const CHECKPOINT_CONFORMANCE_DIR = path.resolve(
+  HERE,
+  "..",
+  "..",
+  "..",
+  "conformance",
+  "checkpoint-request",
+);
+
+export interface CheckpointConformanceManifest {
+  schemaVersion: 1;
+  description: string;
+  count: number;
+  vectors: {
+    name: string;
+    file: string;
+    subject: "checkpoint-request";
+    accepted: boolean;
+    rejectReason: string | null;
+  }[];
+}
+
+/**
+ * Write the ADDITIVE checkpoint-request vector set + its OWN manifest to
+ * `conformance/checkpoint-request/`. Same schema shape as the shared
+ * manifest (schemaVersion / count / vectors[]). Idempotent / byte-stable.
+ * Never touches the shared `conformance/manifest.json` or
+ * `conformance/vectors/`.
+ */
+export function writeCheckpointRequestVectors(): string[] {
+  const vectors = buildCheckpointRequestVectors();
+  fs.mkdirSync(path.join(CHECKPOINT_CONFORMANCE_DIR, "vectors"), {
+    recursive: true,
+  });
+
+  const written: string[] = [];
+  for (const vec of vectors) {
+    const file = path.join("vectors", `${vec.name}.json`);
+    fs.writeFileSync(
+      path.join(CHECKPOINT_CONFORMANCE_DIR, file),
+      stableJson(vec),
+      "utf8",
+    );
+    written.push(file);
+  }
+
+  const manifest: CheckpointConformanceManifest = {
+    schemaVersion: 1,
+    description:
+      "ADDITIVE Maintainers checkpoint-request conformance vectors (Phase-H foundation). Separate from the shared protocol manifest. An implementation is conformant iff it produces the expected verdict for EVERY vector, including every fail-closed negative. Authority is holder-signs (the current mandate holder), NOT the succession quorum.",
+    count: vectors.length,
+    vectors: vectors.map((vec) => ({
+      name: vec.name,
+      file: `vectors/${vec.name}.json`,
+      subject: vec.expect.subject,
+      accepted: vec.expect.accepted,
+      rejectReason: vec.expect.rejectReason,
+    })),
+  };
+  fs.writeFileSync(
+    path.join(CHECKPOINT_CONFORMANCE_DIR, "manifest.json"),
+    stableJson(manifest),
+    "utf8",
+  );
+  written.unshift("manifest.json");
+
+  fs.writeFileSync(
+    path.join(CHECKPOINT_CONFORMANCE_DIR, "README.md"),
+    [
+      "# Maintainers — checkpoint-request conformance vectors (additive)",
+      "",
+      "Language-agnostic, deterministically-generated test vectors for the",
+      "`maintainers/checkpoint-request/v1` signed envelope (the Phase-H",
+      "Maintainers Checkpoints witness layer foundation).",
+      "",
+      "**This is an ADDITIVE, separate artifact.** The shared protocol",
+      "vectors live in `../manifest.json` + `../vectors/` and are NOT",
+      "touched by this set. The iOS / Android ports hard-assert the shared",
+      "set's `count == 17`; this set has its own independent manifest.",
+      "",
+      "Authority model: **holder-signs** — a checkpoint request is",
+      "authorised iff it carries a signature from the holder of the",
+      "project's mandate current at the verifier's clock, exactly like",
+      "CaEndorsement / ReleaseEndorsement. The succession quorum does NOT",
+      "authorise a checkpoint request.",
+      "",
+      "## Layout",
+      "",
+      "- `manifest.json` — the index: every vector, its file, subject,",
+      "  expected `accepted`, and the exact landed `rejectReason`.",
+      "- `vectors/<name>.json` — one self-contained vector each.",
+      "",
+      "## Regeneration (deterministic)",
+      "",
+      "Generated by `packages/protocol/scripts/gen-conformance.ts` and",
+      "asserted by `packages/protocol/tests/conformance.test.ts` through",
+      "the real `verifyCheckpointRequest`. Byte-stable (fixed seeds /",
+      "timestamps / UUIDs).",
+      "",
+      "```",
+      "npx vitest run packages/protocol/tests/conformance.test.ts",
+      "```",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  written.unshift("README.md");
+
+  return written;
+}
+
 const invokedDirectly =
   typeof process !== "undefined" &&
   Array.isArray(process.argv) &&
@@ -984,6 +1379,10 @@ const invokedDirectly =
 
 if (invokedDirectly) {
   const files = writeConformanceVectors();
+  const cpFiles = writeCheckpointRequestVectors();
   // eslint-disable-next-line no-console
-  console.log(`wrote ${files.length} files under ${CONFORMANCE_DIR}`);
+  console.log(
+    `wrote ${files.length} files under ${CONFORMANCE_DIR}; ` +
+      `${cpFiles.length} files under ${CHECKPOINT_CONFORMANCE_DIR}`,
+  );
 }

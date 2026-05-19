@@ -1,0 +1,59 @@
+{
+  "name": "cr-neg-signed-by-not-the-holder",
+  "description": "A CheckpointRequest cryptographically valid but signed by `backup` (a successor, NOT the current mandate holder `alice`) ⇒ holder-signs rejects 'signer-not-the-holder'. Proves the succession quorum does NOT authorise a checkpoint request.",
+  "input": {
+    "pin": "e0a3990e95f5747903a249974b664e97e680dd15320315d614ea51b5d6f53384",
+    "now": "2026-03-04T00:00:00Z",
+    "track": "ca",
+    "mandatesByTrack": {
+      "ca": [
+        {
+          "kind": "Mandate",
+          "version": 1,
+          "mandateId": "00000000-0000-4000-8000-0000000000d1",
+          "track": "ca",
+          "holder": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "issuedAt": "2026-01-01T00:00:00Z",
+          "expiresAt": "2026-06-01T00:00:00Z",
+          "successors": [
+            "6b79c57e6a095239282c04818e96112f3f03a4001ba97a564c23852a3f1ea5fc"
+          ],
+          "approvalRule": {
+            "kind": "threshold",
+            "threshold": 1
+          },
+          "minSuccessors": 1,
+          "maxDurationSeconds": 31536000,
+          "defaultDurationSeconds": 15552000,
+          "signedBy": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+          "signatures": [
+            {
+              "pubkey": "dadbd184a2d526f1ebdd5c06fdad9359b228759b4d7f79d66689fa254aad8546",
+              "sig": "2109ea4e93090b1cee1bca54bd3933854512f1cba67520e1cd9af712d008c1ff2724d92af8e607bc5a7d423fc70a3ab039ea260c51d689658455c97b82b3c205"
+            }
+          ]
+        }
+      ]
+    },
+    "checkpointRequest": {
+      "kind": "CheckpointRequest",
+      "version": 1,
+      "canonicalRepo": "https://github.com/ibisllc/conformance-fixture",
+      "maintainersPath": ".maintainers/",
+      "currentMandateHash": "sha256:e0a3990e95f5747903a249974b664e97e680dd15320315d614ea51b5d6f53384",
+      "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
+      "signatures": [
+        {
+          "pubkey": "6b79c57e6a095239282c04818e96112f3f03a4001ba97a564c23852a3f1ea5fc",
+          "sig": "cc39ee8beb92d40c85fa9210fc79824a8de42cc13e06d7e17f718701d90b4f54d66b33964653ce2dd951b6aa8d5016680f999c39d91a68925ed40c0d89abfe06"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "accepted": false,
+    "rejectReason": "signer-not-the-holder",
+    "subject": "checkpoint-request",
+    "track": "ca"
+  }
+}

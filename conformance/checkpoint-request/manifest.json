@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "description": "ADDITIVE Maintainers checkpoint-request conformance vectors (Phase-H foundation). Separate from the shared protocol manifest. An implementation is conformant iff it produces the expected verdict for EVERY vector, including every fail-closed negative. Authority is holder-signs (the current mandate holder), NOT the succession quorum.",
+  "count": 7,
+  "vectors": [
+    {
+      "name": "cr-happy-holder-signed",
+      "file": "vectors/cr-happy-holder-signed.json",
+      "subject": "checkpoint-request",
+      "accepted": true,
+      "rejectReason": null
+    },
+    {
+      "name": "cr-neg-signed-by-not-the-holder",
+      "file": "vectors/cr-neg-signed-by-not-the-holder.json",
+      "subject": "checkpoint-request",
+      "accepted": false,
+      "rejectReason": "signer-not-the-holder"
+    },
+    {
+      "name": "cr-neg-tampered-canonical-bytes",
+      "file": "vectors/cr-neg-tampered-canonical-bytes.json",
+      "subject": "checkpoint-request",
+      "accepted": false,
+      "rejectReason": "signature-invalid"
+    },
+    {
+      "name": "cr-neg-separator-in-field",
+      "file": "vectors/cr-neg-separator-in-field.json",
+      "subject": "checkpoint-request",
+      "accepted": false,
+      "rejectReason": "signature-invalid"
+    },
+    {
+      "name": "cr-neg-empty-required-field",
+      "file": "vectors/cr-neg-empty-required-field.json",
+      "subject": "checkpoint-request",
+      "accepted": false,
+      "rejectReason": "signature-invalid"
+    },
+    {
+      "name": "cr-neg-signature-invalid",
+      "file": "vectors/cr-neg-signature-invalid.json",
+      "subject": "checkpoint-request",
+      "accepted": false,
+      "rejectReason": "signature-invalid"
+    },
+    {
+      "name": "cr-neg-no-authority-at-now",
+      "file": "vectors/cr-neg-no-authority-at-now.json",
+      "subject": "checkpoint-request",
+      "accepted": false,
+      "rejectReason": "no-authority-at-now"
+    }
+  ]
+}

@@ -119,6 +119,40 @@ export interface CaEndorsement {
   signatures: SignatureEntry[];
 }
 
+/**
+ * CheckpointRequest — the first-class signed proof a project's CURRENT
+ * maintainer authority asks the public Maintainers Checkpoints registry
+ * (docs/maintainers-checkpoints-spec-v0.1.md) to witness a publicly
+ * available current mandate hash.
+ *
+ * Authorization is HOLDER-SIGNS (spec open-detail item 1, RESOLVED): a
+ * request is authorised iff a signature over its canonical bytes
+ * verifies under the holder of the project's current mandate — identical
+ * to how CaEndorsement / ReleaseEndorsement are authorised (the shipped
+ * holder-signs model, c4.1), NOT the succession quorum. The
+ * security-state *change* it witnesses is already quorum-signed by
+ * construction (it is a new mandate); the checkpoint merely witnesses
+ * it. §13's literal "satisfy the current mandate approval rule" wording
+ * is superseded by this decision for protocol-wide consistency.
+ *
+ * Like CaEndorsement it is an INDEPENDENT statement: no predecessor /
+ * chain fields. The §11 continuity rule is enforced by the registry bot
+ * over the project's public `.maintainers/` chain, not by this envelope.
+ */
+export interface CheckpointRequest {
+  kind: "CheckpointRequest";
+  version: 1;
+  /** canonical public project repo URL (spec §9). */
+  canonicalRepo: string;
+  /** path to `.maintainers/` within that repo (spec §9). */
+  maintainersPath: string;
+  /** the claimed current mandate hash, `sha256:<hex>` (spec §7.1). */
+  currentMandateHash: string;
+  /** source commit / ref where the mandate chain is publicly available. */
+  sourceCommit: string;
+  signatures: SignatureEntry[];
+}
+
 // ---------------------------------------------------------------------------
 // Mandate v2 — LOCKED Phase-2 v2 model (docs/spec/v1.md; flagship
 // docs/v1-launch-program.md "Phase-2 DESIGN DECISION — LOCKED v2").
@@ -196,7 +230,8 @@ export type Envelope =
   | EmailRotation
   | KeyIntroductionRequest
   | ReleaseEndorsement
-  | CaEndorsement;
+  | CaEndorsement
+  | CheckpointRequest;
 
 /** Derived from observation; not signed. */
 export interface TakeoverAlarm {

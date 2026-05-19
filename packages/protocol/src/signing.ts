@@ -17,6 +17,7 @@ import {
   canonicalKeyIntroductionRequest,
   canonicalReleaseEndorsement,
   canonicalCaEndorsement,
+  canonicalCheckpointRequest,
 } from "./canonical.js";
 import { sign, pubKeyFromPriv } from "./crypto.js";
 import type {
@@ -27,6 +28,7 @@ import type {
   KeyIntroductionRequest,
   ReleaseEndorsement,
   CaEndorsement,
+  CheckpointRequest,
 } from "./types.js";
 
 /**
@@ -129,6 +131,25 @@ export function signCaEndorsement(
 }
 
 /**
+ * Sign a CheckpointRequest. Holder-signs (open-detail item 1): the
+ * project's current-mandate `holder` signs the request; the registry
+ * bot's verifier checks the signature under that holder key. Identical
+ * multi-signature array shape to {@link signCaEndorsement} (extra
+ * co-signatures are permitted, the holder one is what authorises).
+ */
+export function signCheckpointRequest(
+  unsigned: Omit<CheckpointRequest, "signatures">,
+  signers: { privKey: string }[],
+): CheckpointRequest {
+  const bytes = canonicalCheckpointRequest(unsigned);
+  const signatures = signers.map(({ privKey }) => ({
+    pubkey: pubKeyFromPriv(privKey),
+    sig: sign(bytes, privKey),
+  }));
+  return { ...unsigned, signatures };
+}
+
+/**
  * An external Ed25519 signer: the private key lives somewhere this
  * process cannot read (a YubiKey PIV slot, an HSM, a remote signer).
  * `sign` receives the EXACT canonical bytes and returns a 128-hex
@@ -201,6 +222,15 @@ export async function signCaEndorsementWith(
   signers: Ed25519Signer[],
 ): Promise<CaEndorsement> {
   const bytes = canonicalCaEndorsement(unsigned);
+  return { ...unsigned, signatures: await collectSignatures(bytes, signers) };
+}
+
+/** {@link signCheckpointRequest} with external (e.g. YubiKey-PIV) signers. */
+export async function signCheckpointRequestWith(
+  unsigned: Omit<CheckpointRequest, "signatures">,
+  signers: Ed25519Signer[],
+): Promise<CheckpointRequest> {
+  const bytes = canonicalCheckpointRequest(unsigned);
   return { ...unsigned, signatures: await collectSignatures(bytes, signers) };
 }
 

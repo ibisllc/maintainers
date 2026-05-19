@@ -25,7 +25,11 @@ import {
   buildConformanceVectors,
   writeConformanceVectors,
   CONFORMANCE_DIR,
+  buildCheckpointRequestVectors,
+  writeCheckpointRequestVectors,
+  CHECKPOINT_CONFORMANCE_DIR,
   type ConformanceVector,
+  type CheckpointRequestVector,
 } from "../scripts/gen-conformance.js";
 import {
   currentAuthority,
@@ -33,6 +37,7 @@ import {
 } from "../src/verifier.js";
 import { verifyChainOfEndorsements } from "../src/endorsement.js";
 import { verifyCaEndorsements } from "../src/caEndorsement.js";
+import { verifyCheckpointRequest } from "../src/checkpointRequest.js";
 
 /**
  * Replay one vector through the LANDED verifier, returning the verdict
@@ -80,6 +85,24 @@ function replay(vec: ConformanceVector): {
     accepted: false,
     rejectReason: r.rejections[0]?.reason ?? "no-ca-authority-at-now",
   };
+}
+
+/**
+ * Replay one checkpoint-request vector through the LANDED
+ * `verifyCheckpointRequest` (holder-signs over a verify-forward-from-pin
+ * chain). Totality: never throws.
+ */
+function replayCheckpoint(vec: CheckpointRequestVector): {
+  accepted: boolean;
+  rejectReason: string | null;
+} {
+  const { pin, now, track, mandatesByTrack, checkpointRequest } = vec.input;
+  const nowDate = new Date(now);
+  const list = mandatesByTrack[track] ?? [];
+  const chain = verifyMandateChainFromPin(pin, list);
+  const r = verifyCheckpointRequest(checkpointRequest, chain, nowDate);
+  if (r.ok) return { accepted: true, rejectReason: null };
+  return { accepted: false, rejectReason: r.reason };
 }
 
 describe("conformance vectors — schema + presence", () => {
@@ -164,6 +187,89 @@ describe("conformance vectors — deterministic generation + committed artifact"
       expect(onDisk.name).toBe(entry.name);
       // The on-disk vector replays to its own stated verdict.
       const verdict = replay(onDisk);
+      expect(verdict.accepted).toBe(onDisk.expect.accepted);
+      expect(verdict.rejectReason).toBe(onDisk.expect.rejectReason);
+    }
+  });
+});
+
+describe("checkpoint-request conformance — additive set (Phase-H foundation)", () => {
+  it("has >=1 happy path + the mandatory holder-signs fail-closed negatives", () => {
+    const vs = buildCheckpointRequestVectors();
+    const names = new Set(vs.map((v) => v.name));
+
+    expect(vs.some((v) => v.expect.accepted)).toBe(true);
+
+    const mandatory = [
+      "cr-happy-holder-signed",
+      "cr-neg-signed-by-not-the-holder",
+      "cr-neg-tampered-canonical-bytes",
+      "cr-neg-separator-in-field",
+      "cr-neg-empty-required-field",
+      "cr-neg-signature-invalid",
+      "cr-neg-no-authority-at-now",
+    ];
+    for (const m of mandatory) expect(names.has(m)).toBe(true);
+
+    for (const v of vs) {
+      expect(v.expect.subject).toBe("checkpoint-request");
+      if (!v.expect.accepted) {
+        expect(typeof v.expect.rejectReason).toBe("string");
+        expect((v.expect.rejectReason ?? "").length).toBeGreaterThan(0);
+      } else {
+        expect(v.expect.rejectReason).toBeNull();
+      }
+    }
+  });
+
+  for (const vec of buildCheckpointRequestVectors()) {
+    it(`${vec.name}: ${vec.description.slice(0, 80)}`, () => {
+      let verdict: { accepted: boolean; rejectReason: string | null };
+      expect(() => {
+        verdict = replayCheckpoint(vec);
+      }).not.toThrow();
+      verdict = replayCheckpoint(vec);
+      expect(verdict.accepted).toBe(vec.expect.accepted);
+      expect(verdict.rejectReason).toBe(vec.expect.rejectReason);
+    });
+  }
+
+  it("two independent builds serialize byte-identically", () => {
+    const a = JSON.stringify(buildCheckpointRequestVectors());
+    const b = JSON.stringify(buildCheckpointRequestVectors());
+    expect(a).toBe(b);
+  });
+
+  it("regenerates its OWN conformance/checkpoint-request/ dir (byte-stable); shared 17-set untouched", () => {
+    const first = writeCheckpointRequestVectors();
+    const snap1 = snapshotDir(CHECKPOINT_CONFORMANCE_DIR);
+    const second = writeCheckpointRequestVectors();
+    const snap2 = snapshotDir(CHECKPOINT_CONFORMANCE_DIR);
+    expect(second).toEqual(first);
+    expect(snap2).toEqual(snap1);
+
+    // The additive dir is strictly nested under, but disjoint from, the
+    // shared 17-vector dir's own files (manifest.json / vectors/*.json).
+    expect(CHECKPOINT_CONFORMANCE_DIR.startsWith(CONFORMANCE_DIR)).toBe(true);
+    expect(CHECKPOINT_CONFORMANCE_DIR).not.toBe(CONFORMANCE_DIR);
+
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(CHECKPOINT_CONFORMANCE_DIR, "manifest.json"),
+        "utf8",
+      ),
+    ) as { count: number; vectors: { name: string; file: string }[] };
+    const vs = buildCheckpointRequestVectors();
+    expect(manifest.count).toBe(vs.length);
+    for (const entry of manifest.vectors) {
+      const onDisk = JSON.parse(
+        fs.readFileSync(
+          path.join(CHECKPOINT_CONFORMANCE_DIR, entry.file),
+          "utf8",
+        ),
+      ) as CheckpointRequestVector;
+      expect(onDisk.name).toBe(entry.name);
+      const verdict = replayCheckpoint(onDisk);
       expect(verdict.accepted).toBe(onDisk.expect.accepted);
       expect(verdict.rejectReason).toBe(onDisk.expect.rejectReason);
     }
