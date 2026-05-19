@@ -6,6 +6,7 @@ export * from "./verifier.js";
 export * from "./endorsement.js";
 export * from "./caEndorsement.js";
 export * from "./checkpointRequest.js";
+export * from "./checkpointBot.js";
 export * from "./storage.js";
 export * from "./encryptedBlobAdapter.js";
 export * from "./fetchClient.js";
