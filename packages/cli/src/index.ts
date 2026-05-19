@@ -35,7 +35,7 @@ import {
   type PivPinProvider,
 } from "./lib/keysource.js";
 import { ttyConfirm, type ConfirmFn } from "./lib/ceremony.js";
-import { pivPinFromTty } from "./lib/piv-pin.js";
+import { pivPinFromTty, runPivPinSelfTest } from "./lib/piv-pin.js";
 import { newUuid } from "./lib/uuid.js";
 import { runEndorsement } from "./commands/endorsement.js";
 import { runCaEndorsement } from "./commands/caEndorsement.js";
@@ -104,6 +104,13 @@ export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
         return await runVerify(args, env);
       case "status":
         return await runStatus(args, env);
+      case "selftest-pin":
+        // Hidden, NON-SECRET acceptance check of the no-echo PIN-read
+        // path. Drives the SAME reader; the human types a throwaway
+        // dummy (NOT a real PIN); prints only verdict + length + SHA.
+        // Not listed in `printUsage` (operator-facing surface stays the
+        // four ceremony verbs); never wired into any signing path.
+        return await runPivPinSelfTest(env.println, env.printerr);
       case undefined:
       case "help":
       case "--help":
@@ -189,6 +196,7 @@ export {
 export {
   pivPinFromTty,
   openControllingTty,
+  runPivPinSelfTest,
   type TtyDevice,
   type PivPinPromptOptions,
 } from "./lib/piv-pin.js";
