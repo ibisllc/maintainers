@@ -1,0 +1,20 @@
+{
+  "name": "@maintainers/server-adapter-checkpoints-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/action.ts",
+  "types": "./src/action.ts",
+  "exports": {
+    ".": "./src/action.ts",
+    "./bot": "./src/bot.ts"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --dir tests"
+  },
+  "dependencies": {
+    "@ibisllc/maintainers": "*"
+  },
+  "license": "BUSL-1.1"
+}
