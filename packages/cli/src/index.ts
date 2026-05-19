@@ -35,6 +35,7 @@ import {
   type PivPinProvider,
 } from "./lib/keysource.js";
 import { ttyConfirm, type ConfirmFn } from "./lib/ceremony.js";
+import { pivPinFromTty } from "./lib/piv-pin.js";
 import { newUuid } from "./lib/uuid.js";
 import { runEndorsement } from "./commands/endorsement.js";
 import { runCaEndorsement } from "./commands/caEndorsement.js";
@@ -79,6 +80,13 @@ export const defaultEnv: CliEnv = {
     prompt: (line: string) => process.stderr.write(line + "\n"),
     interactive: Boolean(process.stdin.isTTY),
   }),
+  // The missing seam (the genesis-ceremony gap): the concrete secure PIN
+  // reader. Prompts the controlling terminal (/dev/tty) with echo
+  // DISABLED; the PIN is never read from argv/env/a file and never
+  // logged. A non-interactive context fails closed deterministically
+  // (never hangs, never fabricates) — matching the pivTransport
+  // interactivity above so both seams agree on what "interactive" means.
+  pivPin: pivPinFromTty({ interactive: Boolean(process.stdin.isTTY) }),
 };
 
 export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
@@ -178,3 +186,9 @@ export {
   type ConnectWithPromptOptions,
   type ChannelFactory,
 } from "./lib/piv-connect.js";
+export {
+  pivPinFromTty,
+  openControllingTty,
+  type TtyDevice,
+  type PivPinPromptOptions,
+} from "./lib/piv-pin.js";
