@@ -18,6 +18,10 @@ Ed25519 sign/verify, the mandate-chain / release-endorsement /
 CA-endorsement verifiers, storage + encrypted-blob adapters, and a
 zero-dependency `fetch()` client.
 
+**Source / issues:** <https://github.com/ibisllc/maintainers> (this
+package lives at `packages/protocol`). The spec is
+[`docs/spec/v1.md`](https://github.com/ibisllc/maintainers/blob/main/docs/spec/v1.md).
+
 ## Install
 
 ```
