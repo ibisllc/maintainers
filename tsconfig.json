@@ -4,6 +4,7 @@
     { "path": "./packages/protocol" },
     { "path": "./packages/web-ui" },
     { "path": "./packages/server-adapters/cloudflare-worker" },
+    { "path": "./packages/server-adapters/checkpoints-bot" },
     { "path": "./packages/cli" },
     { "path": "./packages/extension" }
   ]
