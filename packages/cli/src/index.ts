@@ -36,6 +36,7 @@ import {
 } from "./lib/keysource.js";
 import { ttyConfirm, type ConfirmFn } from "./lib/ceremony.js";
 import { pivPinFromTty, runPivPinSelfTest } from "./lib/piv-pin.js";
+import { runWizard, defaultPrompt, type PromptFn } from "./lib/wizard.js";
 import { newUuid } from "./lib/uuid.js";
 import { runEndorsement } from "./commands/endorsement.js";
 import { runCaEndorsement } from "./commands/caEndorsement.js";
@@ -60,6 +61,17 @@ export interface CliEnv {
    *  Default: {@link ttyConfirm} (real TTY; fail-closed when piped).
    *  `--yes` skips the prompt; tests inject a fake. */
   confirm?: ConfirmFn;
+  /** Line prompt for the guided menu wizard. Default:
+   *  {@link defaultPrompt} (a `node:readline/promises` reader over the
+   *  real TTY). Tests inject a scripted fake. Never used for the PIN —
+   *  the PIN is read only inside the existing signing path via
+   *  {@link CliEnv.pivPin}, no-echo. */
+  prompt?: PromptFn;
+  /** True iff attached to an interactive terminal. The bare-invocation
+   *  guided menu engages ONLY when this is true; a non-interactive bare
+   *  invocation stays `printUsage` (unchanged). Default: derived from
+   *  `process.stdin.isTTY`, matching `pivTransport`/`pivPin`. */
+  interactive?: boolean;
 }
 
 export const defaultEnv: CliEnv = {
@@ -87,6 +99,8 @@ export const defaultEnv: CliEnv = {
   // (never hangs, never fabricates) — matching the pivTransport
   // interactivity above so both seams agree on what "interactive" means.
   pivPin: pivPinFromTty({ interactive: Boolean(process.stdin.isTTY) }),
+  prompt: defaultPrompt,
+  interactive: Boolean(process.stdin.isTTY),
 };
 
 export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
@@ -111,7 +125,35 @@ export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
         // Not listed in `printUsage` (operator-facing surface stays the
         // four ceremony verbs); never wired into any signing path.
         return await runPivPinSelfTest(env.println, env.printerr);
+      case "menu":
+        // Explicit opt-in. Non-interactive ⇒ runWizard fails closed with
+        // a clear CliError (caught below → exit 1); never hangs.
+        return await runWizard(
+          {
+            println: env.println,
+            printerr: env.printerr,
+            prompt: env.prompt,
+            interactive: env.interactive,
+          },
+          (a) => dispatch(a, env),
+        );
       case undefined:
+        // Bare `maintainers`: the guided menu ONLY when interactive.
+        // Non-interactive (piped/CI/no-TTY) stays EXACTLY as before —
+        // printUsage + exit 0, prompt-free, never engages the wizard.
+        if (env.interactive) {
+          return await runWizard(
+            {
+              println: env.println,
+              printerr: env.printerr,
+              prompt: env.prompt,
+              interactive: env.interactive,
+            },
+            (a) => dispatch(a, env),
+          );
+        }
+        printUsage(env.println);
+        return 0;
       case "help":
       case "--help":
       case "-h":
@@ -147,6 +189,10 @@ export async function run(argv: string[], env: CliEnv = defaultEnv): Promise<num
 
 function printUsage(println: (s: string) => void): void {
   println("maintainers — authority-management CLI");
+  println("");
+  println("run `maintainers` (no subcommand) in a terminal for a guided");
+  println("menu; `maintainers menu` forces it. The flag-driven commands");
+  println("below are unchanged (the scripting path).");
   println("");
   println("commands:");
   println("  upsert-mandate  --track NAME --signing-key KEY --duration 60d [--holder KEY] [--successors A,B] [--threshold N] [--min-successors N] [--max-duration 365d] [--default-duration 60d] [--project-name P --project-contact C --project-homepage H --project-tracks a,b] [--path .maintainers] [--dry-run]");
@@ -200,3 +246,4 @@ export {
   type TtyDevice,
   type PivPinPromptOptions,
 } from "./lib/piv-pin.js";
+export { runWizard, defaultPrompt, type PromptFn } from "./lib/wizard.js";
