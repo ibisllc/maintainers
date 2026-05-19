@@ -35,6 +35,7 @@ import { CliError } from "./args.js";
 
 export type CeremonyKind =
   | "ca-endorsement"
+  | "checkpoint-submit"
   | "create-key"
   | "upsert-mandate";
 
@@ -109,6 +110,15 @@ function bannerBody<U>(a: Assembled<U>, head: string): string[] {
         "UPSERT MANDATE — issue the next mandate on this track. The",
         "predecessor's embedded rule (approvalRule over its successors)",
         "governs whether this is accepted; there is NO self-renewal.",
+        head,
+      ];
+    case "checkpoint-submit":
+      return [
+        head,
+        "CHECKPOINT SUBMIT — holder-sign a PUBLIC request that the",
+        "Maintainers Checkpoints registry witness this current mandate",
+        "hash. This proof becomes part of a PUBLIC, mirrored PR history",
+        "(spec §9). Witness-only — it does NOT change project authority.",
         head,
       ];
     case "create-key":

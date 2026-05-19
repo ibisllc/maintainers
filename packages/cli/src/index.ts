@@ -42,6 +42,7 @@ import { runEndorsement } from "./commands/endorsement.js";
 import { runCaEndorsement } from "./commands/caEndorsement.js";
 import { runCreateKey } from "./commands/createKey.js";
 import { runUpsertMandate } from "./commands/upsertMandate.js";
+import { runCheckpointSubmit } from "./commands/checkpointSubmit.js";
 import { runStatus, runVerify } from "./commands/verify.js";
 
 export interface CliEnv {
@@ -114,6 +115,18 @@ export async function dispatch(args: ParsedArgs, env: CliEnv): Promise<number> {
         return await runCreateKey(args, env);
       case "upsert-mandate":
         return await runUpsertMandate(args, env);
+      case "checkpoint": {
+        // `maintainers checkpoint submit …` — sub-action dispatch (the
+        // only verb in this namespace at v0.1). An unknown/absent
+        // sub-action fails closed with a clear message, never silently.
+        const sub = args.positionals[0];
+        if (sub === "submit") return await runCheckpointSubmit(args, env);
+        env.printerr(
+          `unknown checkpoint sub-action: ${sub ?? "(none)"} — expected ` +
+            `\`maintainers checkpoint submit …\``,
+        );
+        return 2;
+      }
       case "verify":
         return await runVerify(args, env);
       case "status":
@@ -200,6 +213,8 @@ function printUsage(println: (s: string) => void): void {
   println("  endorsement     --commit 40HEX --tag SEMVER --signing-key KEY [--previous-id UUID --previous-commit 40HEX] [--intermediates auto|file:X|csv] [--track release] [--path .maintainers]");
   println("  ca-endorsement  --ca-pubkey 64HEX --signing-key KEY [--scope S] [--duration 7d] [--track ca] [--path .maintainers] [--dry-run]");
   println("  create-key      --signing-key KEY --display-name NAME --email ADDR [--introduction-mandate UUID] [--photo URL] [--github H] [--role R] [--path .maintainers] [--dry-run]");
+  println("  checkpoint submit --canonical-repo URL --source-commit REF --signing-key KEY [--maintainers-path .maintainers/] [--track ca] [--current-mandate-hash sha256:HEX] [--path .maintainers] [--dry-run]");
+  println("                  (holder-sign a PUBLIC Maintainers-Checkpoints request + emit the §9 PR payload; H_new derived from the local store unless --current-mandate-hash is given; the verb EMITS — opening the PR is a separate human/gh step)");
   println("  verify          [--path .maintainers] [--as-of RFC3339|now]");
   println("  status          [--path .maintainers] [--as-of RFC3339|now]");
   println("");
@@ -217,6 +232,13 @@ export { buildEndorsement } from "./commands/endorsement.js";
 export { buildCaEndorsement, assembleCaEndorsement } from "./commands/caEndorsement.js";
 export { buildCreateKey, assembleCreateKey } from "./commands/createKey.js";
 export { buildUpsertMandate, assembleUpsertMandate } from "./commands/upsertMandate.js";
+export {
+  buildCheckpointRequest,
+  assembleCheckpointRequest,
+  buildCheckpointSubmissionPayload,
+  checkpointCsvPath,
+  type CheckpointSubmissionPayload,
+} from "./commands/checkpointSubmit.js";
 export { buildReport } from "./commands/verify.js";
 export {
   renderPreview,
